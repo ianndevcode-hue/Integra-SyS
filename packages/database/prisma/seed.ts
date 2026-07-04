@@ -183,6 +183,7 @@ async function main() {
         cfop: p.cfop,
         unit: p.unit,
         price: p.price,
+        stockQuantity: p.code === 'P003' ? 120 : 50,
         icmsCsosn: p.icmsCsosn,
         pisCst: '49',
         cofinsCst: '49',

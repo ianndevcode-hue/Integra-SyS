@@ -47,4 +47,55 @@ export class AuthService {
       throw new UnauthorizedException('Token inválido ou expirado');
     }
   }
+
+  async profile(payload: JwtPayload) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        tenantId: true,
+        companyId: true,
+        branchId: true,
+        name: true,
+        email: true,
+        role: true,
+        permissions: true,
+      },
+    });
+    if (!user) {
+      throw new UnauthorizedException('Usuário não encontrado');
+    }
+
+    const [company, license] = await Promise.all([
+      user.companyId
+        ? this.prisma.company.findUnique({
+            where: { id: user.companyId },
+            select: { id: true, tradeName: true, corporateName: true, cnpj: true, uf: true },
+          })
+        : null,
+      user.tenantId
+        ? this.prisma.license.findFirst({
+            where: { tenantId: user.tenantId, status: { in: ['ACTIVE', 'TRIAL'] } },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null,
+    ]);
+
+    return {
+      user,
+      company,
+      license: license
+        ? {
+            plan: license.plan,
+            status: license.status,
+            modules: {
+              fiscal: license.fiscalEnabled,
+              pdv: license.pdvEnabled,
+              inventory: license.inventoryEnabled,
+              reports: license.reportsEnabled,
+            },
+          }
+        : null,
+    };
+  }
 }

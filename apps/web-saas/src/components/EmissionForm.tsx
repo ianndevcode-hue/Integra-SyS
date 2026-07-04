@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatCurrency } from '@integra/shared';
 import { api, openPdfBase64 } from '@/lib/api';
+import type { CustomerDto, ProductDto } from '@integra/types';
 
 export interface EmissionItem {
   productId: string;
@@ -72,6 +73,42 @@ export function EmissionForm({ model }: { model: '55' | '65' }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EmissionResult | null>(null);
+  const [products, setProducts] = useState<ProductDto[]>([]);
+  const [customers, setCustomers] = useState<CustomerDto[]>([]);
+
+  useEffect(() => {
+    Promise.all([api<ProductDto[]>('/erp/products'), api<CustomerDto[]>('/erp/customers')])
+      .then(([productList, customerList]) => {
+        setProducts(productList);
+        setCustomers(customerList);
+      })
+      .catch(() => {});
+  }, []);
+
+  function applyProduct(index: number, productId: string) {
+    const product = products.find((item) => item.id === productId);
+    if (!product) return;
+    updateItem(index, {
+      productId: product.id,
+      code: product.code,
+      description: product.description,
+      ncm: product.ncm ?? '',
+      cfop: product.cfop ?? '5102',
+      unit: product.unit,
+      unitPrice: product.price,
+      quantity: 1,
+      totalPrice: product.price,
+      icmsCsosn: product.icmsCsosn ?? '102',
+    });
+  }
+
+  function applyCustomer(customerId: string) {
+    const customer = customers.find((item) => item.id === customerId);
+    if (!customer) return;
+    setCustomerId(customer.id);
+    setCustomerDocument(customer.document ?? '');
+    setCustomerName(customer.name);
+  }
 
   const totalItems = items.reduce((sum, item) => sum + item.totalPrice - item.discount, 0);
   const totalPayments = payments.reduce((sum, payment) => sum + payment.amount, 0);
@@ -163,6 +200,15 @@ export function EmissionForm({ model }: { model: '55' | '65' }) {
           {isNfe ? (
             <>
               <div>
+                <label>Cliente cadastrado</label>
+                <select value={customerId} onChange={(e) => applyCustomer(e.target.value)}>
+                  <option value="">Selecione…</option>
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label>ID do cliente *</label>
                 <input value={customerId} onChange={(e) => setCustomerId(e.target.value)} required placeholder="uuid do cliente" />
               </div>
@@ -190,6 +236,15 @@ export function EmissionForm({ model }: { model: '55' | '65' }) {
         <h3 style={{ marginBottom: 12 }}>Itens</h3>
         {items.map((item, index) => (
           <div key={index} style={{ borderBottom: '1px solid #e5e7eb', paddingBottom: 14, marginBottom: 14 }}>
+            <div className="field" style={{ maxWidth: 420, marginBottom: 10 }}>
+              <label>Produto cadastrado</label>
+              <select value={item.productId} onChange={(e) => applyProduct(index, e.target.value)}>
+                <option value="">Selecione para preencher…</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>{product.code} — {product.description}</option>
+                ))}
+              </select>
+            </div>
             <div className="form-grid">
               <div>
                 <label>Código *</label>
