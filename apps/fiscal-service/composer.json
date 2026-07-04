@@ -1,0 +1,34 @@
+{
+    "name": "integra/fiscal-service",
+    "description": "Integra SYS - Microserviço fiscal (NF-e 55 / NFC-e 65) com NFePHP/sped-nfe",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.2",
+        "ext-curl": "*",
+        "ext-dom": "*",
+        "ext-json": "*",
+        "ext-openssl": "*",
+        "ext-soap": "*",
+        "ext-xml": "*",
+        "ext-zip": "*",
+        "ext-mbstring": "*",
+        "nfephp-org/sped-nfe": "^5.1",
+        "nfephp-org/sped-da": "^1.1",
+        "vlucas/phpdotenv": "^5.6",
+        "monolog/monolog": "^3.7"
+    },
+    "autoload": {
+        "psr-4": {
+            "IntegraSys\\Fiscal\\": "src/"
+        }
+    },
+    "scripts": {
+        "serve": "php -S 0.0.0.0:3334 -t public public/index.php"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
