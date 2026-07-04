@@ -1,0 +1,622 @@
+// ============================================================
+// Integra SYS - Prisma Schema
+// Core SaaS multi-tenant + Módulo Fiscal (NF-e 55 / NFC-e 65)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// Enums
+// ------------------------------------------------------------
+
+enum UserRole {
+  MASTER_ADMIN
+  TENANT_ADMIN
+  MANAGER
+  FISCAL
+  CASHIER
+  VIEWER
+}
+
+enum LicenseStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+  EXPIRED
+  CANCELED
+}
+
+enum FiscalEnvironment {
+  HOMOLOGATION
+  PRODUCTION
+}
+
+enum TaxRegime {
+  SIMPLES_NACIONAL
+  SIMPLES_NACIONAL_EXCESSO
+  REGIME_NORMAL
+  MEI
+}
+
+enum FiscalModel {
+  NFE_55
+  NFCE_65
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING
+  SENDING
+  AUTHORIZED
+  REJECTED
+  DENIED
+  CANCELED
+  INUTILIZED
+  CONTINGENCY
+  ERROR
+}
+
+enum InvoiceEventType {
+  AUTHORIZATION
+  CANCELLATION
+  CORRECTION_LETTER
+  INUTILIZATION
+  DENIAL
+  REJECTION
+}
+
+enum InvoiceEventStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  ERROR
+}
+
+enum CertificateStatus {
+  ACTIVE
+  EXPIRING
+  EXPIRED
+  INVALID
+  REMOVED
+}
+
+enum XmlType {
+  NFE_AUTHORIZED
+  NFCE_AUTHORIZED
+  CANCELLATION
+  INUTILIZATION
+  CORRECTION_LETTER
+  REJECTION
+}
+
+enum SaleStatus {
+  OPEN
+  FINISHED
+  CANCELED
+  PENDING_SYNC
+}
+
+// ------------------------------------------------------------
+// Core SaaS: Tenant / Company / Branch / User / License
+// ------------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companies Company[]
+  users     User[]
+  licenses  License[]
+
+  @@map("tenants")
+}
+
+model Company {
+  id                    String   @id @default(uuid())
+  tenantId              String
+  cnpj                  String   @unique
+  corporateName         String
+  tradeName             String?
+  email                 String?
+  phone                 String?
+  street                String?
+  number                String?
+  complement            String?
+  district              String?
+  cityCode              String?
+  cityName              String?
+  uf                    String?
+  zipCode               String?
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  branches Branch[]
+  users    User[]
+
+  fiscalConfigs      FiscalConfig[]
+  fiscalCertificates FiscalCertificate[]
+  fiscalSequences    FiscalSequence[]
+  fiscalCscs         FiscalCsc[]
+  invoices           Invoice[]
+  fiscalRejections   FiscalRejection[]
+  webserviceLogs     FiscalWebserviceLog[]
+  sales              Sale[]
+  products           Product[]
+  customers          Customer[]
+
+  @@index([tenantId])
+  @@map("companies")
+}
+
+model Branch {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  cnpj      String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+  @@map("branches")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String?
+  companyId    String?
+  branchId     String?
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(VIEWER)
+  permissions  String[] @default([])
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant    Tenant?    @relation(fields: [tenantId], references: [id])
+  company   Company?   @relation(fields: [companyId], references: [id])
+  auditLogs AuditLog[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model License {
+  id               String        @id @default(uuid())
+  tenantId         String
+  plan             String
+  status           LicenseStatus @default(TRIAL)
+  fiscalEnabled    Boolean       @default(false)
+  pdvEnabled       Boolean       @default(true)
+  inventoryEnabled Boolean       @default(true)
+  reportsEnabled   Boolean       @default(true)
+  maxUsers         Int           @default(5)
+  maxInvoicesMonth Int           @default(1000)
+  validUntil       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("licenses")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String?
+  companyId String?
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+// ------------------------------------------------------------
+// Catálogo / Vendas
+// ------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(uuid())
+  tenantId    String
+  companyId   String
+  code        String
+  ean         String?
+  description String
+  ncm         String?
+  cest        String?
+  cfop        String?
+  unit        String   @default("UN")
+  price       Decimal  @default(0) @db.Decimal(15, 2)
+  icmsCst     String?
+  icmsCsosn   String?
+  icmsRate    Decimal? @db.Decimal(7, 4)
+  pisCst      String?
+  pisRate     Decimal? @db.Decimal(7, 4)
+  cofinsCst   String?
+  cofinsRate  Decimal? @db.Decimal(7, 4)
+  origin      Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, code])
+  @@index([tenantId])
+  @@map("products")
+}
+
+model Customer {
+  id                       String   @id @default(uuid())
+  tenantId                 String
+  companyId                String
+  name                     String
+  document                 String? // CPF ou CNPJ
+  email                    String?
+  phone                    String?
+  stateRegistration        String?
+  stateRegistrationIndicator Int    @default(9)
+  street                   String?
+  number                   String?
+  complement               String?
+  district                 String?
+  cityCode                 String?
+  cityName                 String?
+  uf                       String?
+  zipCode                  String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  invoices Invoice[]
+  sales    Sale[]
+
+  @@index([tenantId, companyId])
+  @@index([document])
+  @@map("customers")
+}
+
+model Sale {
+  id          String     @id @default(uuid())
+  tenantId    String
+  companyId   String
+  branchId    String?
+  customerId  String?
+  localSaleId String? // id gerado no PDV para sync offline (idempotência)
+  operatorId  String?
+  status      SaleStatus @default(OPEN)
+  total       Decimal    @default(0) @db.Decimal(15, 2)
+  discount    Decimal    @default(0) @db.Decimal(15, 2)
+  soldAt      DateTime   @default(now())
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+  invoices Invoice[]
+
+  @@unique([companyId, localSaleId])
+  @@index([tenantId, companyId, soldAt])
+  @@map("sales")
+}
+
+// ------------------------------------------------------------
+// MÓDULO FISCAL
+// ------------------------------------------------------------
+
+model FiscalConfig {
+  id                    String            @id @default(uuid())
+  tenantId              String
+  companyId             String
+  branchId              String?
+  uf                    String
+  cityCode              String
+  cityName              String
+  stateRegistration     String?
+  municipalRegistration String?
+  taxRegime             TaxRegime         @default(SIMPLES_NACIONAL)
+  crt                   Int               @default(1)
+  environment           FiscalEnvironment @default(HOMOLOGATION)
+  defaultModel          FiscalModel       @default(NFCE_65)
+  defaultNfeSeries      Int               @default(1)
+  defaultNfceSeries     Int               @default(1)
+  nfeEnabled            Boolean           @default(false)
+  nfceEnabled           Boolean           @default(false)
+  nfseEnabled           Boolean           @default(false)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  company    Company                      @relation(fields: [companyId], references: [id])
+  technician FiscalResponsibleTechnician?
+
+  @@unique([companyId, branchId])
+  @@index([tenantId])
+  @@map("fiscal_configs")
+}
+
+model FiscalCertificate {
+  id                String            @id @default(uuid())
+  tenantId          String
+  companyId         String
+  branchId          String?
+  certificatePath   String // caminho do .pfx no storage do fiscal-service
+  encryptedPassword String // senha cifrada com AES-256-GCM (nunca em texto puro)
+  validFrom         DateTime?
+  validUntil        DateTime?
+  serialNumber      String?
+  subjectCnpj       String?
+  status            CertificateStatus @default(ACTIVE)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([tenantId, companyId])
+  @@index([validUntil])
+  @@map("fiscal_certificates")
+}
+
+model FiscalSequence {
+  id            String            @id @default(uuid())
+  tenantId      String
+  companyId     String
+  branchId      String?
+  model         FiscalModel
+  series        Int
+  currentNumber Int               @default(0)
+  nextNumber    Int               @default(1)
+  environment   FiscalEnvironment @default(HOMOLOGATION)
+  status        String            @default("ACTIVE")
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  // Numeração controlada por empresa + modelo + série + ambiente:
+  // homologação e produção nunca compartilham numeração.
+  @@unique([companyId, branchId, model, series, environment])
+  @@index([tenantId])
+  @@map("fiscal_sequences")
+}
+
+model FiscalCsc {
+  id                String            @id @default(uuid())
+  tenantId          String
+  companyId         String
+  branchId          String?
+  cscId             String
+  encryptedCscToken String // token cifrado com AES-256-GCM
+  environment       FiscalEnvironment @default(HOMOLOGATION)
+  active            Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, branchId, environment])
+  @@index([tenantId])
+  @@map("fiscal_cscs")
+}
+
+model FiscalResponsibleTechnician {
+  id             String   @id @default(uuid())
+  fiscalConfigId String   @unique
+  name           String
+  email          String
+  cnpj           String
+  phone          String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  fiscalConfig FiscalConfig @relation(fields: [fiscalConfigId], references: [id], onDelete: Cascade)
+
+  @@map("fiscal_responsible_technicians")
+}
+
+model Invoice {
+  id               String            @id @default(uuid())
+  tenantId         String
+  companyId        String
+  branchId         String?
+  saleId           String?
+  customerId       String?
+  model            FiscalModel
+  series           Int
+  number           Int
+  accessKey        String?           @unique
+  protocol         String?
+  receiptNumber    String?
+  environment      FiscalEnvironment @default(HOMOLOGATION)
+  status           InvoiceStatus     @default(DRAFT)
+  operationNature  String            @default("VENDA")
+  issueDate        DateTime          @default(now())
+  authorizedAt     DateTime?
+  canceledAt       DateTime?
+  totalProducts    Decimal           @default(0) @db.Decimal(15, 2)
+  totalDiscount    Decimal           @default(0) @db.Decimal(15, 2)
+  totalInvoice     Decimal           @default(0) @db.Decimal(15, 2)
+  totalTaxes       Decimal           @default(0) @db.Decimal(15, 2)
+  rejectionCode    String?
+  rejectionMessage String?
+  xmlPath          String?
+  danfePath        String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  company    Company           @relation(fields: [companyId], references: [id])
+  sale       Sale?             @relation(fields: [saleId], references: [id])
+  customer   Customer?         @relation(fields: [customerId], references: [id])
+  items      InvoiceItem[]
+  payments   InvoicePayment[]
+  events     InvoiceEvent[]
+  xmls       InvoiceXml[]
+  rejections FiscalRejection[]
+
+  // Numeração fiscal não pode repetir por empresa/modelo/série/ambiente
+  @@unique([companyId, model, series, number, environment])
+  @@index([tenantId, companyId, status])
+  @@index([issueDate])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  productId   String?
+  code        String
+  description String
+  ncm         String
+  cest        String?
+  cfop        String
+  unit        String
+  quantity    Decimal  @db.Decimal(15, 4)
+  unitPrice   Decimal  @db.Decimal(15, 4)
+  totalPrice  Decimal  @db.Decimal(15, 2)
+  discount    Decimal  @default(0) @db.Decimal(15, 2)
+  icmsCst     String?
+  icmsCsosn   String?
+  icmsRate    Decimal? @db.Decimal(7, 4)
+  pisCst      String?
+  pisRate     Decimal? @db.Decimal(7, 4)
+  cofinsCst   String?
+  cofinsRate  Decimal? @db.Decimal(7, 4)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+model InvoicePayment {
+  id                String   @id @default(uuid())
+  invoiceId         String
+  paymentMethod     String // código tPag SEFAZ (01, 03, 04, 17...)
+  amount            Decimal  @db.Decimal(15, 2)
+  cardBrand         String?
+  authorizationCode String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_payments")
+}
+
+model InvoiceEvent {
+  id             String             @id @default(uuid())
+  invoiceId      String
+  eventType      InvoiceEventType
+  sequence       Int                @default(1)
+  protocol       String?
+  justification  String?
+  correctionText String?
+  status         InvoiceEventStatus @default(PENDING)
+  xmlPath        String?
+  occurredAt     DateTime           @default(now())
+  createdAt      DateTime           @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, eventType])
+  @@map("invoice_events")
+}
+
+model InvoiceXml {
+  id        String   @id @default(uuid())
+  invoiceId String
+  type      XmlType
+  path      String
+  // hash SHA-256 do conteúdo: XML autorizado é imutável, o hash permite auditoria
+  sha256    String?
+  createdAt DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, type])
+  @@map("invoice_xmls")
+}
+
+model FiscalRejection {
+  id           String   @id @default(uuid())
+  tenantId     String
+  companyId    String
+  invoiceId    String?
+  code         String
+  message      String
+  source       String   @default("SEFAZ")
+  solutionHint String?
+  createdAt    DateTime @default(now())
+
+  company Company  @relation(fields: [companyId], references: [id])
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@index([tenantId, companyId, createdAt])
+  @@index([code])
+  @@map("fiscal_rejections")
+}
+
+model FiscalServiceStatus {
+  id          String            @id @default(uuid())
+  uf          String
+  environment FiscalEnvironment
+  online      Boolean           @default(false)
+  sefazCode   String?
+  message     String?
+  responseMs  Int?
+  checkedAt   DateTime          @default(now())
+
+  @@index([uf, environment, checkedAt])
+  @@map("fiscal_service_status")
+}
+
+model FiscalWebserviceLog {
+  id              String            @id @default(uuid())
+  tenantId        String?
+  companyId       String?
+  branchId        String?
+  service         String // NfeAutorizacao, NfeRetAutorizacao, RecepcaoEvento...
+  uf              String?
+  environment     FiscalEnvironment @default(HOMOLOGATION)
+  requestXmlPath  String?
+  responseXmlPath String?
+  statusCode      String?
+  message         String?
+  durationMs      Int?
+  createdAt       DateTime          @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@index([tenantId, companyId, createdAt])
+  @@index([service])
+  @@map("fiscal_webservice_logs")
+}

@@ -1,0 +1,34 @@
+{
+  "name": "integra-sys",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integra SYS - ERP/PDV SaaS multi-tenant com módulo fiscal real (NF-e 55 / NFC-e 65) via NFePHP/sped-nfe",
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm run build:packages && pnpm run build:apps",
+    "build:packages": "pnpm --filter @integra/types build && pnpm --filter @integra/shared build && pnpm --filter @integra/validation build && pnpm --filter @integra/config build && pnpm --filter @integra/database build && pnpm --filter @integra/auth build && pnpm --filter @integra/fiscal-client build && pnpm --filter @integra/ui build",
+    "build:apps": "pnpm --filter @integra/api build && pnpm --filter @integra/web-saas build && pnpm --filter @integra/admin-master build",
+    "dev:api": "pnpm --filter @integra/api dev",
+    "dev:web": "pnpm --filter @integra/web-saas dev",
+    "dev:admin": "pnpm --filter @integra/admin-master dev",
+    "dev:mobile": "pnpm --filter @integra/mobile-pdv start",
+    "dev:fiscal": "cd apps/fiscal-service && composer serve",
+    "db:generate": "pnpm --filter @integra/database prisma:generate",
+    "db:migrate": "pnpm --filter @integra/database prisma:migrate",
+    "db:push": "pnpm --filter @integra/database prisma:push",
+    "db:seed": "pnpm --filter @integra/database seed",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "esbuild",
+      "sharp"
+    ]
+  }
+}

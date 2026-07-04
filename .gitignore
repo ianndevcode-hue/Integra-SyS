@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Builds
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Prisma
+packages/database/prisma/migrations/dev.db*
+
+# Fiscal storage (certificados, XMLs e DANFEs reais nunca vão para o git)
+apps/fiscal-service/storage/certificates/*
+apps/fiscal-service/storage/xml/nfe/*
+apps/fiscal-service/storage/xml/nfce/*
+apps/fiscal-service/storage/xml/cancelamentos/*
+apps/fiscal-service/storage/xml/inutilizacoes/*
+apps/fiscal-service/storage/xml/cce/*
+apps/fiscal-service/storage/danfe/*
+apps/fiscal-service/storage/logs/*
+!**/.gitkeep
+
+# Expo
+.expo/
+*.jks
+*.p12
+*.pfx
+*.key
+
+# Misc
+.DS_Store
+*.log
+coverage/
