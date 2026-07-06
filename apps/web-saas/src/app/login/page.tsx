@@ -21,7 +21,7 @@ export default function LoginPage() {
         body: { email, password },
       });
       setToken(result.accessToken);
-      router.push('/fiscal');
+      router.push('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Falha no login');
     } finally {
@@ -33,7 +33,7 @@ export default function LoginPage() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <form onSubmit={handleSubmit} className="card" style={{ width: 380 }}>
         <h1 style={{ fontSize: 22, marginBottom: 4 }}>Integra SYS</h1>
-        <p className="muted" style={{ marginBottom: 20 }}>Acesse sua conta para gerenciar o módulo fiscal</p>
+        <p className="muted" style={{ marginBottom: 20 }}>Acesse sua conta para gerenciar o ERP, PDV e módulo fiscal</p>
         {error && <div className="alert alert-error">{error}</div>}
         <div className="field">
           <label>E-mail</label>

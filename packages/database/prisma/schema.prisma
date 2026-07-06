@@ -253,7 +253,8 @@ model Product {
   cest        String?
   cfop        String?
   unit        String   @default("UN")
-  price       Decimal  @default(0) @db.Decimal(15, 2)
+  price         Decimal  @default(0) @db.Decimal(15, 2)
+  stockQuantity Decimal  @default(0) @db.Decimal(15, 4)
   icmsCst     String?
   icmsCsosn   String?
   icmsRate    Decimal? @db.Decimal(7, 4)
