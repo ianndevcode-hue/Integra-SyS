@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -c cjp -b cjp https://integra-code.tech/install.php:*)"
+    ]
+  }
+}
