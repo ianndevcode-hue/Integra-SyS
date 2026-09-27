@@ -8,3 +8,5 @@ dist/
 
 # PHPMailer is committed (no composer on shared hosting)
 !public_html/inc/vendor/
+.claude/
+image.png
