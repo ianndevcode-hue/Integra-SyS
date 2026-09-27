@@ -36,6 +36,7 @@ final class Pkcs12
     private const OID_LOCAL_KEY_ID = '1.2.840.113549.1.9.21';
     private const OID_PBES2 = '1.2.840.113549.1.5.13';
     private const OID_PBKDF2 = '1.2.840.113549.1.5.12';
+    private const MAX_ITERATIONS = 2000000;
 
     /** PKCS#12 PBE: oid => [cipher, key length, IV length, RC2 effective bits] */
     private const PBE = [
@@ -197,7 +198,7 @@ final class Pkcs12
         $hash = self::DIGESTS[self::oid($di['c'][0]['c'][0] ?? null)] ?? null;
         if ($hash === null) return null;
         return ['hash' => $hash, 'digest' => self::octets($di['c'][1] ?? null), 'salt' => self::octets($macData['c'][1] ?? null),
-            'iter' => isset($macData['c'][2]) ? self::int($macData['c'][2]) : 1];
+            'iter' => isset($macData['c'][2]) ? self::iterations(self::int($macData['c'][2])) : 1];
     }
 
     private static function macOk(array $mac, string $data, string $bmp): bool
@@ -216,7 +217,7 @@ final class Pkcs12
             [$cipher, $keyLen, $ivLen, $bits] = self::PBE[$oid];
             self::expect($params, 0x30);
             $salt = self::octets($params['c'][0] ?? null);
-            $iter = self::int($params['c'][1] ?? null);
+            $iter = self::iterations(self::int($params['c'][1] ?? null));
             $key = self::kdf('sha1', $pw['bmp'], $salt, $iter, 1, $keyLen);
             $iv = $ivLen ? self::kdf('sha1', $pw['bmp'], $salt, $iter, 2, $ivLen) : '';
             if ($cipher === 'rc4') return self::rc4($key, $data);
@@ -232,11 +233,12 @@ final class Pkcs12
             if (self::oid($kdf['c'][0] ?? null) !== self::OID_PBKDF2) throw new Pkcs12Exception('unsupported', 'derivação ' . self::oid($kdf['c'][0] ?? null));
             $kp = $kdf['c'][1]['c'] ?? [];
             $salt = self::octets($kp[0] ?? null);
-            $iter = self::int($kp[1] ?? null);
+            $iter = self::iterations(self::int($kp[1] ?? null));
             $keyLen = null;
             $prf = 'sha1';
             foreach (array_slice($kp, 2) as $n) {
                 if ($n['t'] === 0x02) $keyLen = self::int($n);
+                if ($keyLen !== null && ($keyLen < 1 || $keyLen > 64)) throw new Pkcs12Exception('invalid', 'tamanho de chave inválido');
                 elseif ($n['t'] === 0x30) $prf = self::HMACS[self::oid($n['c'][0] ?? null)] ?? throw new Pkcs12Exception('unsupported', 'PRF ' . self::oid($n['c'][0] ?? null));
             }
             $encOid = self::oid($enc['c'][0] ?? null);
@@ -254,6 +256,17 @@ final class Pkcs12
         while (openssl_error_string()) { /* drain */ }
         if ($out === false) throw new Pkcs12Exception('password');
         return $out;
+    }
+
+    /**
+     * Iteration counts come from the (untrusted) uploaded file and the KDF here runs in PHP:
+     * real certificates use 1–600 000 iterations, so anything far above that is rejected
+     * instead of pinning the PHP worker.
+     */
+    private static function iterations(int $n): int
+    {
+        if ($n < 1 || $n > self::MAX_ITERATIONS) throw new Pkcs12Exception('invalid', 'número de iterações fora do padrão (' . $n . ')');
+        return $n;
     }
 
     /** PKCS#12 key derivation (RFC 7292, appendix B.2). $id: 1 key, 2 IV, 3 MAC key. */

@@ -1486,7 +1486,7 @@ route('POST', '/nfse/certificate', function () {
     guard('users');
     $in = input();
     $pfx = base64_decode((string)($in['pfx_b64'] ?? ''), true);
-    if (!$pfx) json_error('Envie o arquivo .pfx do certificado A1.', 422);
+    if (!$pfx || strlen($pfx) > 200000) json_error('Envie o arquivo .pfx do certificado A1.', 422);
     $info = nfse_read_pfx($pfx, (string)($in['password'] ?? ''))['info'];
     if ($info['expired']) json_error('Este certificado está vencido (validade ' . $info['valid_to'] . ').', 422);
     set_setting('nfse_cert_pfx', base64_encode($pfx));
