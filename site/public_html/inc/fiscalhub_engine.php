@@ -823,7 +823,8 @@ function fh_sigiss_fields(array $inv, array $em): array
         'ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']],
         'crc' => ['xsd:int', only_digits((string)$em['sigiss_crc'])], 'crc_estado' => ['xsd:string', (string)$em['sigiss_crc_uf']],
         'aliquota_simples' => ['xsd:string', $em['op_simp_nac'] !== '1' && (float)$inv['iss_rate'] > 0 ? $m($inv['iss_rate']) : ''],
-        'id_sis_legado' => ['xsd:string', 'FH' . $inv['id']],
+        // the manual defines it as the integer code of the note in the contribuinte's system: "FH3" is not accepted
+        'id_sis_legado' => ['xsd:string', (string)(int)$inv['id']],
         'servico' => ['xsd:int', (string)$inv['sigiss_code']], 'situacao' => ['xsd:string', $sit],
         'valor' => ['xsd:string', $m($inv['amount'])], 'base' => ['xsd:string', $m($inv['base'])],
         'descricaoNF' => ['xsd:string', nfse_text((string)$inv['description'], 1500)],
@@ -957,6 +958,22 @@ function fh_transmit(int $id, ?int $customerId = null): array
                 // an empty answer may still have created the note: look for this RPS before calling it a refusal
                 try { $recovered = fh_sigiss_find_rps($inv, $em); } catch (Throwable $e) { log_line('fiscalhub', 'sigiss rps lookup failed', ['id' => $id, 'error' => $e->getMessage()]); }
                 if ($recovered) { $number = (string)$recovered['nota']; log_line('fiscalhub', 'sigiss note recovered after empty answer', ['id' => $id, 'nota' => $number]); }
+                if (!$recovered) {
+                    // no note was created: resend once without the optional fields the prefeitura may fail to store
+                    $lean = array_diff_key($fields, ['id_sis_legado' => 1, 'valor_total_tributos' => 1]);
+                    try {
+                        $xp3 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $lean]], fh_sigiss_cfg($em)['url']);
+                        log_line('fiscalhub', 'sigiss lean resend', ['id' => $id, 'resultado' => sigiss_value($xp3, 'Resultado'), 'nota' => sigiss_value($xp3, 'Nota'), 'errors' => sigiss_errors($xp3), 'response' => sigiss_last_response()]);
+                        if (sigiss_value($xp3, 'Resultado') === '1' && (int)sigiss_value($xp3, 'Nota') > 0) {
+                            [$xp, $number] = [$xp3, sigiss_value($xp3, 'Nota')];
+                            $recovered = ['link' => '', 'autenticidade' => ''];
+                        } elseif ($e3 = sigiss_errors($xp3)) {
+                            [$xp, $errors] = [$xp3, $e3]; // now the SIGISS says why
+                        }
+                    } catch (NfseException $e) {
+                        log_line('fiscalhub', 'sigiss lean resend failed', ['id' => $id, 'error' => $e->getMessage()]);
+                    }
+                }
             }
             if (!$recovered && !fh_sigiss_note_is_rps($inv, $em, (int)$number)) {
                 // hints only from what the SIGISS itself said (never from our own diagnosis text)
