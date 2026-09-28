@@ -11,6 +11,7 @@ export async function render(el, ctx) {
     <div class="page-head"><div><h2>${K.title}</h2><p>${kind === 'receivable' ? 'Tudo o que seus clientes devem: notas emitidas, vendas, parcelas e mensalidades.' : 'Fornecedores, impostos, aluguel, salários e demais compromissos da empresa.'}</p></div>
       <div class="page-actions">
         ${kind === 'receivable' ? `<button class="btn" data-invoices title="Criar contas a receber das NFS-e já emitidas">${icon('file')} Das notas emitidas</button>` : ''}
+        <a class="btn" href="#/financeiro/recorrencias?kind=${kind}" title="Contas fixas que se criam sozinhas todo mês">${icon('refresh')} Recorrências automáticas</a>
         <button class="btn" data-csv>${icon('download')} Planilha</button>
         <button class="btn btn-primary" data-new>${icon('plus')} Nova ${K.one}</button>
       </div></div>
@@ -29,7 +30,7 @@ export async function render(el, ctx) {
     ],
     columns: [
       { label: 'Vencimento', sort: 'due_date', render: (r) => `<b>${date(r.due_date)}</b>${r.status === 'paid' ? `<br><small class="muted">${K.done.toLowerCase()} ${date(r.paid_at)}</small>` : ''}` },
-      { label: 'Descrição', sort: 'description', primary: true, render: (r) => `<b>${esc(r.description)}</b>${r.party_name ? `<br><small class="muted">${esc(r.party_name)}</small>` : ''}${r.origin === 'invoice' ? ' <span class="badge blue" title="Gerado pela nota fiscal">NFS-e</span>' : ''}${r.transaction_id ? ` <span title="Conciliado com o extrato">${icon('link')}</span>` : ''}` },
+      { label: 'Descrição', sort: 'description', primary: true, render: (r) => `<b>${esc(r.description)}</b>${r.party_name ? `<br><small class="muted">${esc(r.party_name)}</small>` : ''}${r.origin === 'invoice' ? ' <span class="badge blue" title="Gerado pela nota fiscal">NFS-e</span>' : ''}${r.origin === 'recurring' ? ` <span class="badge violet" title="Criado pela recorrência automática">${icon('refresh')} automática</span>` : ''}${r.transaction_id ? ` <span title="Conciliado com o extrato">${icon('link')}</span>` : ''}` },
       { label: 'Categoria', render: (r) => (r.category_name ? `<span class="fin-cat">${esc(r.category_name)}</span>` : '<span class="muted">—</span>') },
       { label: 'Conta', render: (r) => esc(r.account_name || '—') },
       { label: 'Valor', sort: 'amount', num: true, render: (r) => `<b>${money(r.amount)}</b>${r.status === 'paid' && Math.abs(r.paid_amount - r.amount) > 0.004 ? `<br><small class="muted">${K.done.toLowerCase()} ${money(r.paid_amount)}</small>` : ''}` },

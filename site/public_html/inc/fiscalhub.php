@@ -21,7 +21,7 @@ const FH_MARKET_FACTOR = 0.90;
 const FH_MARKET_DATE = '2026-09-27';
 /** Free plan: 15 notes a month, no charge, renewed automatically (one per CPF/CNPJ). */
 const FH_FREE_PLAN = 'gratis';
-const FH_FREE_NOTES = 15;
+const FH_FREE_NOTES = 5;
 
 /**
  * Market references used to price each tier (monthly price in BRL). Marília: Actana ERP is

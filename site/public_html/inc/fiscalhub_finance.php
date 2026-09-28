@@ -1474,5 +1474,7 @@ function fhf_cron(): array
         if ($c['provider'] === 'pluggy' && !fhf_of_enabled()) continue;
         try { fhf_conn_sync($c); $n++; } catch (Throwable $e) { $errors[] = "#{$c['id']}: " . $e->getMessage(); }
     }
-    return ['synced' => $n, 'errors' => $errors];
+    return ['synced' => $n, 'errors' => $errors, 'recurring' => fhf_rec_run_all()];
 }
+
+require_once __DIR__ . '/fiscalhub_fin_recurring.php';

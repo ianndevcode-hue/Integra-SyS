@@ -9,7 +9,7 @@ const NAV = [
   { group: null, items: [['/', 'Painel', 'home'], ['/emitir', 'Emitir nota', 'plus']] },
   { group: 'Notas', items: [['/notas', 'Notas fiscais', 'file'], ['/recorrentes', 'Recorrentes', 'refresh', 'recurring'], ['/lote', 'Emissão em lote', 'upload', 'batch']] },
   { group: 'Cadastros', items: [['/clientes', 'Clientes (tomadores)', 'users'], ['/servicos', 'Serviços', 'tag']] },
-  { group: 'Financeiro', items: [['/financeiro', 'Visão geral e fluxo', 'flow'], ['/financeiro/receber', 'Contas a receber', 'trendUp'], ['/financeiro/pagar', 'Contas a pagar', 'trendDown'], ['/financeiro/extrato', 'Extrato e conciliação', 'link'], ['/financeiro/contas', 'Contas bancárias', 'bank']] },
+  { group: 'Financeiro', items: [['/financeiro', 'Visão geral e fluxo', 'flow'], ['/financeiro/receber', 'Contas a receber', 'trendUp'], ['/financeiro/pagar', 'Contas a pagar', 'trendDown'], ['/financeiro/recorrencias', 'Recorrências automáticas', 'refresh'], ['/financeiro/extrato', 'Extrato e conciliação', 'link'], ['/financeiro/contas', 'Contas bancárias', 'bank']] },
   { group: 'Gestão', items: [['/relatorios', 'Relatórios e IA', 'pie'], ['/empresa', 'Empresa e certificado', 'settings'], ['/assinatura', 'Assinatura', 'wallet']] },
 ];
 const ROUTES = [
@@ -29,6 +29,7 @@ const ROUTES = [
   [/^\/financeiro$/, 'financeiro', 'Financeiro'],
   [/^\/financeiro\/receber$/, 'contas', 'Contas a receber', 'receivable'],
   [/^\/financeiro\/pagar$/, 'contas', 'Contas a pagar', 'payable'],
+  [/^\/financeiro\/recorrencias$/, 'finrec', 'Recorrências automáticas'],
   [/^\/financeiro\/extrato$/, 'extrato', 'Extrato e conciliação'],
   [/^\/financeiro\/contas$/, 'bancos', 'Contas bancárias'],
 ];
@@ -101,8 +102,11 @@ async function route() {
   const [path, qs] = hash.split('?');
   const query = Object.fromEntries(new URLSearchParams(qs || ''));
   const match = ROUTES.map(([re, mod, title, sub]) => ({ m: path.match(re), mod, title, sub })).find((r) => r.m);
-  const view = $('#view');
-  if (!view) return;
+  const old = $('#view');
+  if (!old) return;
+  // a fresh container per screen: listeners a view added to it never leak into the next one
+  const view = old.cloneNode(false);
+  old.replaceWith(view);
   $('.app')?.classList.remove('nav-open');
   const links = $$('.sb-link');
   const best = links.filter((a) => a.dataset.path === path || (a.dataset.path !== '/' && path.startsWith(a.dataset.path + '/'))).sort((a, b) => b.dataset.path.length - a.dataset.path.length)[0];

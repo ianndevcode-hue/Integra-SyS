@@ -9,7 +9,7 @@ export function renderNoPlan(root) {
     <div class="auth-logo">${BRAND_MARK}<b class="fh-name">Integra <span>Fiscal Hub</span></b></div>
     <h1>Emita suas notas fiscais de serviço em segundos</h1>
     <p class="muted">SIGISS de Marília e Emissor Nacional, cálculo automático de ISS e retenções, envio ao cliente, downloads em lote e relatórios com IA.</p>
-    <a class="btn btn-primary btn-block" href="/fiscal-hub-contratar?plano=gratis">Começar grátis — 15 notas por mês</a>
+    <a class="btn btn-primary btn-block" href="/fiscal-hub-contratar?plano=gratis">Começar grátis — 5 notas por mês</a>
     <a class="btn btn-block" href="/fiscal-hub#planos" style="margin-top:8px">Ver todos os planos</a>
     <a class="btn btn-ghost btn-block" href="/cliente/" style="margin-top:8px">Voltar à Área do Cliente</a></div></div>`;
 }

@@ -811,7 +811,7 @@ function schema_statements(string $driver): array
 }
 
 /** Bump when tables/indexes are added; api/index.php migrates automatically. */
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /** Columns added after the first release: [table, column, definition]. */
 function schema_added_columns(string $driver): array
@@ -890,6 +890,8 @@ function schema_added_columns(string $driver): array
         // v10: recurring invoices every N months (1 mensal, 2 bimestral, 3 trimestral, 6 semestral, 12 anual)
         ['fh_recurring', 'interval_months', 'INT NOT NULL DEFAULT 1'],
         ['fh_recurring', 'due_day', 'INT NULL'], // payment due day (fills {data_vencimento} and the receivable)
+        // v11: entries created by an automatic recurrence (fh_fin_recurring)
+        ['fh_fin_entries', 'recurring_id', 'INT NULL'],
     ];
 }
 
@@ -921,6 +923,16 @@ function schema_data_fixes(): array
             }
         }
         set_setting('fh_v9_plan_features', '1');
+    }
+    // v11: the free plan now includes 5 notes per month (was 15)
+    if (setting('fh_v11_free_notes') !== '1') {
+        foreach (db_all("SELECT id, tagline, features FROM fh_plans WHERE code = 'gratis'") as $p) {
+            $fix = fn($t) => preg_replace('/\b15 notas\b/u', '5 notas', (string)$t);
+            $features = array_map($fix, json_decode((string)$p['features'], true) ?: []);
+            db_exec('UPDATE fh_plans SET notes_limit = 5, tagline = ?, features = ?, updated_at = ? WHERE id = ?', [$fix($p['tagline']), json_encode($features, JSON_UNESCAPED_UNICODE), date('Y-m-d H:i:s'), $p['id']]);
+            $log[] = 'fh_plans gratis: 5 notas/mes';
+        }
+        set_setting('fh_v11_free_notes', '1');
     }
     return $log;
 }

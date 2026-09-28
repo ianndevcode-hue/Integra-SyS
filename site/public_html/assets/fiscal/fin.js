@@ -81,7 +81,7 @@ export async function entryForm(entry, opts = {}) {
     { name: 'payment_method', label: 'Forma de pagamento', type: 'select', empty: '—', options: methodOptions() },
     { name: 'document_number', label: 'Nº do documento', placeholder: 'NF, boleto, contrato...' },
     { name: 'cost_center', label: 'Centro de custo / projeto', placeholder: 'opcional' },
-    isNew && { name: 'repeat_mode', label: 'Repetição', type: 'select', empty: false, options: [{ value: 'none', label: 'Não repete' }, { value: 'installments', label: 'Parcelado (divide o valor)' }, { value: 'monthly', label: 'Mensal (mesmo valor)' }, { value: 'weekly', label: 'Semanal' }, { value: 'yearly', label: 'Anual' }] },
+    isNew && { name: 'repeat_mode', label: 'Repetição', type: 'select', empty: false, options: [{ value: 'none', label: 'Não repete' }, { value: 'installments', label: 'Parcelado (divide o valor)' }, { value: 'monthly', label: 'Mensal (mesmo valor)' }, { value: 'weekly', label: 'Semanal' }, { value: 'yearly', label: 'Anual' }, { value: 'auto', label: 'Automática — cria sozinha todo mês, sem fim' }] },
     isNew && { name: 'repeat', label: 'Quantidade', type: 'number', min: 2, max: 120 },
     isNew && { name: 'paid', label: kind === 'receivable' ? 'Já foi recebido (baixar agora)' : 'Já foi pago (baixar agora)', type: 'checkbox' },
     isNew && { name: 'paid_at', label: 'Data do pagamento', type: 'date' },
@@ -97,8 +97,9 @@ export async function entryForm(entry, opts = {}) {
       bindParty(form, kind);
       const sync = () => {
         const mode = form.elements.repeat_mode?.value;
-        form.elements.repeat && form.elements.repeat.closest('.field').classList.toggle('hidden', !mode || mode === 'none');
-        form.elements.paid_at && isNew && form.elements.paid_at.closest('.field').classList.toggle('hidden', !form.elements.paid.checked);
+        form.elements.repeat && form.elements.repeat.closest('.field').classList.toggle('hidden', !mode || mode === 'none' || mode === 'auto');
+        form.elements.paid && form.elements.paid.closest('.check').classList.toggle('hidden', mode === 'auto');
+        form.elements.paid_at && isNew && form.elements.paid_at.closest('.field').classList.toggle('hidden', !form.elements.paid.checked || mode === 'auto');
       };
       form.elements.repeat_mode?.addEventListener('change', sync);
       form.elements.paid?.addEventListener('change', sync);
@@ -106,7 +107,13 @@ export async function entryForm(entry, opts = {}) {
     },
     onSubmit: async (d) => {
       const body = { ...d };
-      if (isNew) {
+      if (isNew && d.repeat_mode === 'auto') {
+        // automatic monthly recurrence: a template that keeps creating the entries by itself
+        const r = await api('/fh/fin/recurring', { method: 'POST', body: { kind, description: d.description, amount: d.amount, frequency: 'monthly', start_date: d.due_date, party_name: d.party_name, party_document: d.party_document,
+          category_id: d.category_id, account_id: d.account_id, payment_method: d.payment_method, cost_center: d.cost_center, notes: d.notes, lead_days: 30 } });
+        toast(`Recorrência automática criada: ${r.entries} conta(s) já lançada(s); as próximas aparecem sozinhas 30 dias antes de vencer. Gerencie em Recorrências automáticas.`);
+        opts.onSaved && opts.onSaved([]);
+      } else if (isNew) {
         body.kind = kind;
         if (d.repeat_mode === 'installments') body.installments = d.repeat;
         else if (d.repeat_mode && d.repeat_mode !== 'none') body.recurrence = d.repeat_mode;

@@ -289,3 +289,4 @@ details.fh-details[open] > summary { border-bottom: 1px solid var(--border); }
 .fh-rec-toolbar .chips-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .fh-rec-live { grid-template-columns: 1fr; }
 .fh-rec-live .chips-row > * { flex: 0 0 auto; width: auto; }
+.fh-rec-date.out { background: var(--danger-soft); color: var(--danger); }

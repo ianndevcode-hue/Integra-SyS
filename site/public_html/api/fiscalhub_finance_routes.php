@@ -36,7 +36,8 @@ route('GET', '/fh/fin/bootstrap', function () {
 });
 
 route('GET', '/fh/fin/summary', function () {
-    [$cid] = fhf_guard();
+    [$cid, $a] = fhf_guard();
+    if ($a['can_emit']) fhf_rec_run_customer($cid);
     json_out(fhf_summary($cid));
 });
 
@@ -55,10 +56,54 @@ route('GET', '/fh/fin/dre', function () {
     json_out(fhf_dre($cid, $from, $to, (string)($_GET['basis'] ?? 'cash')));
 });
 
+/* ------------------------------------------------- automatic recurrences */
+
+route('GET', '/fh/fin/recurring', function () {
+    [$cid, $a] = fhf_guard();
+    if (!$a['can_emit']) { json_out(['data' => array_map('fhf_rec_public', db_all('SELECT * FROM fh_fin_recurring WHERE customer_id = ? ORDER BY active DESC, next_due', [$cid])), 'frequencies' => array_map(fn($f) => $f[0], FHF_FREQ), 'monthly_total' => 0]); }
+    json_out(fhf_rec_list($cid, $_GET));
+});
+route('POST', '/fh/fin/recurring/preview', function () {
+    fhf_guard();
+    json_out(fhf_rec_preview(input()));
+});
+route('POST', '/fh/fin/recurring', function () {
+    [$cid] = fhf_guard_write();
+    json_out(fhf_rec_save($cid, input(), null), 201);
+});
+route('PUT', '/fh/fin/recurring/{id}', function ($p) {
+    [$cid] = fhf_guard_write();
+    json_out(fhf_rec_save($cid, input(), fhf_rec($cid, (int)$p['id'])));
+});
+route('POST', '/fh/fin/recurring/{id}/toggle', function ($p) {
+    [$cid] = fhf_guard_write();
+    $r = fhf_rec($cid, (int)$p['id']);
+    db_update('fh_fin_recurring', (int)$r['id'], ['active' => (int)$r['active'] ? 0 : 1, 'updated_at' => now()]);
+    if (!(int)$r['active']) fhf_rec_sync(fhf_rec($cid, (int)$r['id']));
+    json_out(fhf_rec_public(fhf_rec($cid, (int)$r['id'])));
+});
+route('POST', '/fh/fin/recurring/{id}/generate', function ($p) {
+    [$cid] = fhf_guard_write();
+    $r = fhf_rec($cid, (int)$p['id']);
+    if (fhf_rec_ended($r, (string)$r['next_due'], (int)$r['generated_count'])) json_error('Esta recorrência já terminou (data final ou quantidade atingida).', 422);
+    $n = fhf_rec_sync($r, true);
+    json_out(['created' => $n, 'recurring' => fhf_rec_public(fhf_rec($cid, (int)$r['id']))]);
+});
+route('GET', '/fh/fin/recurring/{id}/entries', function ($p) {
+    [$cid] = fhf_guard();
+    $r = fhf_rec($cid, (int)$p['id']);
+    json_out(['data' => array_map('fhf_entry_public', db_all('SELECT e.*, a.name AS account_name FROM fh_fin_entries e LEFT JOIN fh_fin_accounts a ON a.id = e.account_id WHERE e.recurring_id = ? AND e.customer_id = ? ORDER BY e.due_date DESC LIMIT 240', [$r['id'], $cid]))]);
+});
+route('DELETE', '/fh/fin/recurring/{id}', function ($p) {
+    [$cid] = fhf_guard_write();
+    json_out(['ok' => true, 'deleted_entries' => fhf_rec_delete($cid, (int)$p['id'], !empty($_GET['open']))]);
+});
+
 /* ------------------------------------------------------------- entries */
 
 route('GET', '/fh/fin/entries', function () {
-    [$cid] = fhf_guard();
+    [$cid, $a] = fhf_guard();
+    if ($a['can_emit'] && (int)($_GET['page'] ?? 1) <= 1) fhf_rec_run_customer($cid);
     json_out(fhf_entries_query($cid, $_GET));
 });
 route('GET', '/fh/fin/entries.csv', function () {
