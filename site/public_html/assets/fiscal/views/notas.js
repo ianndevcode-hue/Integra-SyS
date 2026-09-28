@@ -119,6 +119,7 @@ async function detail(el, id) {
         ${n.status !== 'draft' ? `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/pdf`)}" target="_blank">${icon('download')} PDF</a>` : `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/pdf`)}" target="_blank">${icon('eye')} Prévia</a>`}
         ${['authorized', 'canceled', 'voided'].includes(n.status) ? `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/xml`)}">${icon('code')} XML</a>` : ''}
         ${n.print_url ? `<a class="btn" href="${esc(n.print_url)}" target="_blank" rel="noopener">${icon('external')} Oficial</a>` : ''}
+        ${n.status === 'authorized' && n.provider === 'sigiss' ? `<button class="btn" data-sync title="Consultar a nota na Prefeitura (SIGISS) e no Ambiente de Dados Nacional">${icon('refresh')} Atualizar situação</button>` : ''}
         ${n.status === 'authorized' ? `<button class="btn" data-email>${icon('mail')} Enviar</button>` : ''}
         ${['draft', 'rejected'].includes(n.status) ? `<a class="btn btn-primary" href="#/emitir/${n.id}">${icon('send')} Corrigir e emitir</a>` : ''}
         <button class="btn" data-dup>${icon('copy')} Duplicar</button>
@@ -168,7 +169,7 @@ async function detail(el, id) {
       } catch (err) {
         if (!err.details?.length) throw err;
         // show what the prefeitura/Receita answered, not just the title
-        const m = modal({ title: 'Cancelamento não realizado', body: `<div class="alert alert-danger" style="margin:0"><b>${esc(err.message)}</b><ul style="margin:8px 0 0">${err.details.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`, footer: '<button class="btn btn-primary" data-close>Entendi</button>' });
+        const m = modal({ title: 'Cancelamento não realizado', onClose: () => window.dispatchEvent(new Event('fh:reload')), body: `<div class="alert alert-danger" style="margin:0"><b>${esc(err.message)}</b><ul style="margin:8px 0 0">${err.details.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`, footer: '<button class="btn btn-primary" data-close>Entendi</button>' });
         $('[data-close]', m.foot)?.addEventListener('click', m.close);
         return;
       }
@@ -183,5 +184,13 @@ async function detail(el, id) {
     onSubmit: async (d) => { const r = await api(`/fh/invoices/${n.id}/substitute`, { method: 'POST', body: d }); location.hash = '#/emitir/' + r.id; },
   }));
   $('[data-void]', el)?.addEventListener('click', () => voidModal([n], reload));
+  const sync = async (silent) => {
+    const r = await api(`/fh/invoices/${n.id}/sync`, { method: 'POST' });
+    if (r.status !== n.status) { toast(r.status === 'rejected' ? 'A nota foi recusada pelo Ambiente de Dados Nacional (ADN). Veja o motivo abaixo.' : 'Situação atualizada.', r.status === 'rejected' ? 'error' : 'success'); reload(); }
+    else if (!silent) toast('A nota está válida na Prefeitura.');
+  };
+  $('[data-sync]', el)?.addEventListener('click', async (e) => { const b = e.currentTarget; b.classList.add('loading'); try { await sync(false); } catch (err) { toastError(err); } finally { b.classList.remove('loading'); } });
+  // the ADN may refuse a SIGISS note minutes after it was generated: re-check recent ones when opened
+  if (n.status === 'authorized' && n.provider === 'sigiss' && n.issued_at && Date.now() - new Date(n.issued_at.replace(' ', 'T')).getTime() < 7 * 86400000) sync(true).catch(() => {});
   $('[data-del]', el)?.addEventListener('click', async () => { if (!await confirmDialog('Excluir este rascunho?', { danger: true })) return; await api('/fh/invoices/' + n.id, { method: 'DELETE' }).catch(toastError); location.hash = '#/notas'; });
 }
