@@ -43,8 +43,8 @@ function card(e) {
         <dt>Canal</dt><dd>${esc(provName(e.provider))}${e.provider === 'nacional' ? ` · ${e.environment === 'production' ? '<b>Produção</b>' : 'Produção restrita (testes)'}` : ''}</dd>
         <dt>Regime</dt><dd>${esc((REGIMES.find((r) => r[0] === e.op_simp_nac) || [])[1] || '')}</dd>
         <dt>Inscrição municipal</dt><dd>${esc(e.im || '—')}</dd>
-        ${e.provider === 'nacional' ? `<dt>Certificado</dt><dd>${e.has_certificate ? `${e.cert_expired ? '<span class="neg">Vencido</span>' : `Válido até <b>${date(e.cert_valid_to)}</b>`}${e.cert_days_left !== null && e.cert_days_left <= 30 && !e.cert_expired ? ` <span class="badge yellow">vence em ${e.cert_days_left} dia(s)</span>` : ''}` : '<span class="neg">Não enviado</span>'}</dd>`
-          : `<dt>Senha SIGISS</dt><dd>${e.has_sigiss_password ? 'Cadastrada' : '<span class="neg">Não informada</span>'}</dd>`}
+        ${e.provider === 'sigiss' ? `<dt>Senha SIGISS</dt><dd>${e.has_sigiss_password ? 'Cadastrada' : '<span class="neg">Não informada</span>'}</dd>` : ''}
+        <dt>Certificado A1</dt><dd>${e.has_certificate ? `${e.cert_expired ? '<span class="neg">Vencido</span>' : `Válido até <b>${date(e.cert_valid_to)}</b>`}${e.cert_days_left !== null && e.cert_days_left <= 30 && !e.cert_expired ? ` <span class="badge yellow">vence em ${e.cert_days_left} dia(s)</span>` : ''}` : `<span class="${e.provider === 'nacional' ? 'neg' : 'muted'}">Não enviado${e.provider === 'sigiss' ? ' (opcional no SIGISS)' : ''}</span>`}</dd>
         <dt>Próxima DPS/RPS</dt><dd>Série ${esc(e.dps_serie)} · nº ${esc(e.next_number)}</dd>
       </dl>
       ${e.problems.length ? `<div class="alert alert-warning small" style="margin:12px 0 0">${e.problems.map(esc).join('<br>')}</div>` : ''}
@@ -125,16 +125,18 @@ function renderForm(el, em) {
   syncProv();
   const fill = (d) => Object.entries(d).forEach(([k, val]) => { if (form.elements[k] && val && !form.elements[k].readOnly && (!form.elements[k].value || ['street', 'district', 'city', 'uf', 'city_ibge'].includes(k))) form.elements[k].value = val; });
   $('[data-cnpj]', form)?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
     const doc = form.elements.document.value.replace(/\D/g, '');
     if (doc.length !== 14) { toast('Digite o CNPJ completo (14 dígitos).', 'error'); return; }
-    e.currentTarget.classList.add('loading');
+    btn.classList.add('loading');
     try {
       const r = await api('/fh/cnpj/' + doc);
       fill(r);
       if (r.mei) form.elements.op_simp_nac.value = '2'; else if (r.simples) form.elements.op_simp_nac.value = '3'; else if (r.simples === false) form.elements.op_simp_nac.value = '1';
-      if (r.city_ibge && r.city_ibge !== '3529005') { form.elements.provider.value = 'nacional'; $$('input[name=provider]', form).forEach((x) => { x.checked = x.value === 'nacional'; }); syncProv(); }
       toast('Dados do CNPJ preenchidos. Confira antes de salvar.');
-    } catch (err) { toastError(err); } finally { e.currentTarget?.classList.remove('loading'); }
+      // The channel is the customer's choice: only warn when the SIGISS of Marília does not fit the address.
+      if (r.city_ibge && r.city_ibge !== '3529005' && $('input[name=provider]:checked', form)?.value === 'sigiss') toast(`A empresa fica em ${r.city || 'outro município'}: o SIGISS atende só Marília. Se for o caso, selecione o Emissor Nacional.`, 'error');
+    } catch (err) { toastError(err); } finally { btn.classList.remove('loading'); }
   });
   $('[data-cep]', form).addEventListener('click', async () => { try { fill(await api('/fh/cep/' + form.elements.cep.value.replace(/\D/g, ''))); } catch (err) { toastError(err); } });
   form.elements.cep.addEventListener('change', async () => { if (form.elements.cep.value.replace(/\D/g, '').length === 8) { try { fill(await api('/fh/cep/' + form.elements.cep.value.replace(/\D/g, ''))); } catch (err) { /* ignore */ } } });
@@ -160,7 +162,7 @@ function renderForm(el, em) {
 }
 
 function certBlock(v) {
-  return `<section class="card" data-cert data-prov="nacional"><div class="card-head"><h3>${icon('lock')} Certificado digital A1</h3>${v.has_certificate ? (v.cert_expired ? '<span class="badge red">Vencido</span>' : '<span class="badge green">Válido</span>') : '<span class="badge yellow">Não enviado</span>'}</div><div class="card-body">
+  return `<section class="card" data-cert><div class="card-head"><div><h3>${icon('lock')} Certificado digital A1</h3><small class="muted">Obrigatório para o Emissor Nacional, NF-e e NFC-e · opcional no SIGISS de Marília</small></div>${v.has_certificate ? (v.cert_expired ? '<span class="badge red">Vencido</span>' : '<span class="badge green">Válido</span>') : '<span class="badge yellow">Não enviado</span>'}</div><div class="card-body">
     ${v.has_certificate ? `<p class="small" style="margin:0 0 12px">Atual: <b>${esc(v.cert_subject || '')}</b> · válido até <b>${date(v.cert_valid_to)}</b></p>` : '<p class="small muted" style="margin:0 0 12px">Envie o arquivo .pfx (ou .p12) do e-CNPJ/e-CPF A1 da empresa e a senha. O arquivo fica criptografado (AES-256).</p>'}
     <div class="form-grid cols-4">
       <div class="field span-2"><label>Arquivo do certificado (.pfx/.p12)</label><input type="file" name="pfx" accept=".pfx,.p12,application/x-pkcs12"></div>

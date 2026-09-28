@@ -6,6 +6,7 @@ const NAV = [
   { group: null, items: [['/', 'Painel', 'home'], ['/emitir', 'Emitir nota', 'plus']] },
   { group: 'Notas', items: [['/notas', 'Notas fiscais', 'file'], ['/recorrentes', 'Recorrentes', 'refresh', 'recurring'], ['/lote', 'Emissão em lote', 'upload', 'batch']] },
   { group: 'Cadastros', items: [['/clientes', 'Clientes (tomadores)', 'users'], ['/servicos', 'Serviços', 'tag']] },
+  { group: 'Financeiro', items: [['/financeiro', 'Visão geral e fluxo', 'flow'], ['/financeiro/receber', 'Contas a receber', 'trendUp'], ['/financeiro/pagar', 'Contas a pagar', 'trendDown'], ['/financeiro/extrato', 'Extrato e conciliação', 'link'], ['/financeiro/contas', 'Contas bancárias', 'bank']] },
   { group: 'Gestão', items: [['/relatorios', 'Relatórios e IA', 'pie'], ['/empresa', 'Empresa e certificado', 'settings'], ['/assinatura', 'Assinatura', 'wallet']] },
 ];
 const ROUTES = [
@@ -22,6 +23,11 @@ const ROUTES = [
   [/^\/empresa$/, 'empresa', 'Empresa e certificado'],
   [/^\/empresa\/(nova|\d+)$/, 'empresa', 'Empresa', 'edit'],
   [/^\/assinatura$/, 'assinatura', 'Assinatura'],
+  [/^\/financeiro$/, 'financeiro', 'Financeiro'],
+  [/^\/financeiro\/receber$/, 'contas', 'Contas a receber', 'receivable'],
+  [/^\/financeiro\/pagar$/, 'contas', 'Contas a pagar', 'payable'],
+  [/^\/financeiro\/extrato$/, 'extrato', 'Extrato e conciliação'],
+  [/^\/financeiro\/contas$/, 'bancos', 'Contas bancárias'],
 ];
 const root = document.getElementById('root');
 
@@ -135,7 +141,7 @@ async function boot() {
     return;
   }
   renderShell();
-  if (!fh.activeEmitters().length && !location.hash.startsWith('#/empresa') && !location.hash.startsWith('#/assinatura')) location.hash = '#/empresa/nova';
+  if (!fh.activeEmitters().length && !/^#\/(empresa|assinatura|financeiro)/.test(location.hash)) location.hash = '#/empresa/nova';
   route();
 }
 

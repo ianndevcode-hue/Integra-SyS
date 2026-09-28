@@ -178,24 +178,25 @@ async function plans(el) {
   el.innerHTML = `${head('Planos e preços', `Preço = média de mercado −10% (pesquisa de ${date(d.market_date)}; sistemas integrados a Marília primeiro, média nacional para completar).`, admin ? `<button class="btn" data-reset>${icon('refresh')} Recalcular pela média −10%</button>` : '')}${tabs('/plans')}
     <div class="fh-admin-plans">${d.data.map((p) => `<section class="card"><div class="card-head"><div><h3>${esc(p.name)} ${p.highlight ? '<span class="badge blue">destaque</span>' : ''} ${Number(p.active) ? '' : '<span class="badge">inativo</span>'}</h3><small class="muted">${esc(p.tagline || '')}</small></div>${admin ? `<button class="btn btn-sm" data-edit="${p.id}">${icon('edit')} Editar</button>` : ''}</div>
       <div class="card-body"><div class="fh-admin-price"><b>${money(p.price_monthly)}</b>/mês · ${money(p.price_yearly)}/ano</div>
-      <p class="small muted" style="margin:4px 0 10px">Média de mercado ${money(p.market_avg)} · ${p.notes_limit} notas/mês · ${p.companies_limit} empresa(s) · IA ${p.flags.ai_quota}/mês${p.flags.recurring ? ' · recorrentes' : ''}${p.flags.batch ? ' · lote' : ''}${p.flags.priority ? ' · prioritário' : ''}</p>
+      <p class="small muted" style="margin:4px 0 10px">${Number(p.market_avg) > 0 ? 'Média de mercado ' + money(p.market_avg) + ' · ' : 'Plano gratuito · '}${p.notes_limit} notas/mês · ${p.companies_limit} empresa(s) · IA ${p.flags.ai_quota}/mês${p.flags.recurring ? ' · recorrentes' : ''}${p.flags.batch ? ' · lote' : ''}${p.flags.priority ? ' · prioritário' : ''}${p.flags.open_finance ? ' · Open Finance' : ''}</p>
       <ul class="small" style="margin:0;padding-left:18px">${p.features.map((f) => `<li>${esc(f)}</li>`).join('')}</ul></div></section>`).join('')}</div>
     <h3 style="margin:24px 0 12px">Referências de mercado usadas</h3><div class="grid g2">${refsHtml}</div>`;
   $('[data-reset]', el)?.addEventListener('click', async () => { if (!await confirmDialog('Recalcular os preços dos 4 planos pela média de mercado −10%? Assinaturas existentes mantêm o valor contratado.', { okLabel: 'Recalcular' })) return; await api('/fh-admin/plans/reset-prices', { method: 'POST' }).catch(toastError); plans(el); });
   $$('[data-edit]', el).forEach((b) => b.addEventListener('click', () => {
     const p = d.data.find((x) => x.id === +b.dataset.edit);
     formModal({
-      title: 'Editar plano ' + p.name, size: 'lg', values: { ...p, features: p.features.join('\n'), ai_quota: p.flags.ai_quota, recurring: p.flags.recurring, batch: p.flags.batch, priority: p.flags.priority },
+      title: 'Editar plano ' + p.name, size: 'lg', values: { ...p, features: p.features.join('\n'), ai_quota: p.flags.ai_quota, recurring: p.flags.recurring, batch: p.flags.batch, priority: p.flags.priority, open_finance: p.flags.open_finance },
       fields: [
         { name: 'name', label: 'Nome', required: true }, { name: 'tagline', label: 'Frase' },
         { name: 'price_monthly', label: 'Preço mensal (R$)', type: 'money' }, { name: 'price_yearly', label: 'Preço anual (R$)', type: 'money' },
         { name: 'notes_limit', label: 'Notas por mês', type: 'number', min: 1 }, { name: 'companies_limit', label: 'Empresas', type: 'number', min: 1 },
         { name: 'ai_quota', label: 'Análises com IA por mês', type: 'number', min: 0 },
         { name: 'recurring', label: 'Notas recorrentes', type: 'checkbox' }, { name: 'batch', label: 'Emissão em lote', type: 'checkbox' }, { name: 'priority', label: 'Suporte prioritário', type: 'checkbox' },
+        { name: 'open_finance', label: 'Conexão bancária por Open Finance', type: 'checkbox' },
         { name: 'highlight', label: 'Destacar no site', type: 'checkbox' }, { name: 'active', label: 'Ativo (vendido no site)', type: 'checkbox' },
         { name: 'features', label: 'Vantagens (uma por linha)', type: 'textarea', rows: 8, span: 2 },
       ],
-      onSubmit: async (v) => { await api('/fh-admin/plans/' + p.id, { method: 'PUT', body: { ...v, flags: { ai_quota: v.ai_quota, recurring: v.recurring, batch: v.batch, priority: v.priority } } }); toast('Plano salvo.'); plans(el); },
+      onSubmit: async (v) => { await api('/fh-admin/plans/' + p.id, { method: 'PUT', body: { ...v, flags: { ai_quota: v.ai_quota, recurring: v.recurring, batch: v.batch, priority: v.priority, open_finance: v.open_finance } } }); toast('Plano salvo.'); plans(el); },
     });
   }));
 }
@@ -228,11 +229,25 @@ async function settings(el) {
       <div class="field"><label>Gerar renovação com antecedência (dias)</label><input name="fh_lead_days" type="number" min="0" max="30" value="${esc(s.fh_lead_days || '7')}"></div>
       <div class="field"><label>Tolerância após o vencimento (dias)</label><input name="fh_grace_days" type="number" min="0" max="30" value="${esc(s.fh_grace_days || '5')}"><span class="help">Depois disso a emissão é bloqueada.</span></div>
       <div class="field"><label>Categoria da receita</label><select name="fh_revenue_category"><option value="">Sem categoria</option>${lk.categories.filter((c) => c.entry_type === 'receivable').map((c) => `<option value="${c.id}" ${String(s.fh_revenue_category) === String(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-    </div><div class="fh-card-actions" style="justify-content:flex-end"><button class="btn btn-primary">${icon('check')} Salvar</button></div></form>
+    </div>
+    <div class="card-head" style="border-top:1px solid var(--border)"><h3>${icon('link')} Open Finance (financeiro dos clientes)</h3></div>
+    <div class="card-body form-grid cols-4">
+      <p class="small muted span-2" style="margin:0;grid-column:1/-1">Os clientes já têm opções <b>gratuitas</b> sem nenhuma configuração aqui: Meu Pluggy (com a conta deles), API do Banco Inter PJ, API do Asaas e importação de OFX. Preencha abaixo só se a Integra contratar o agregador Pluggy para oferecer a conexão "Open Finance Integra" nos planos com esse recurso.</p>
+      <div class="field"><label>Open Finance Integra</label><select name="fh_openfinance_enabled"><option value="0">Desligado</option><option value="1" ${s.fh_openfinance_enabled === '1' ? 'selected' : ''}>Ligado</option></select></div>
+      <div class="field"><label>Pluggy Client ID</label><input name="fh_pluggy_client_id" value="${esc(s.fh_pluggy_client_id || '')}" class="mono" autocomplete="off"></div>
+      <div class="field"><label>Pluggy Client Secret</label><input name="fh_pluggy_client_secret" value="${esc(s.fh_pluggy_client_secret || '')}" class="mono" autocomplete="off" type="password"></div>
+      <div class="field" style="align-self:end"><button type="button" class="btn" data-of-test>${icon('bolt')} Testar credenciais</button></div>
+    </div>
+    <div class="fh-card-actions" style="justify-content:flex-end"><button class="btn btn-primary">${icon('check')} Salvar</button></div></form>
     <div class="alert alert-info" style="margin-top:16px">As renovações são geradas pelo <b>cron</b> (a cada hora, a partir das 6h) e cobradas pelo Asaas. O pagamento confirmado pelo webhook libera o acesso automaticamente. O cliente pode pagar pelo link da fatura ou em Área do Cliente → Fiscal Hub → Assinatura.</div>`;
   $('[data-form]', el).addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = Object.fromEntries([...e.target.querySelectorAll('[name]')].map((i) => [i.name, i.value]));
     try { await api('/settings', { method: 'PUT', body }); toast('Configurações salvas.'); } catch (err) { toastError(err); }
+  });
+  $('[data-of-test]', el).addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.classList.add('loading');
+    try { const r = await api('/fh-admin/openfinance/test', { method: 'POST' }); toast(`Credenciais OK: ${r.connectors} instituições disponíveis · ${r.connections} conexão(ões) de clientes.`); } catch (err) { toastError(err); } finally { b.classList.remove('loading'); }
   });
 }

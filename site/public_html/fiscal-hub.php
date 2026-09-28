@@ -5,7 +5,10 @@ require __DIR__ . '/inc/layout/site.php';
 require_once INC_PATH . '/nfse.php';
 require_once INC_PATH . '/fiscalhub.php';
 
-$plans = fh_plans();
+$all = fh_plans();
+$freePlan = null;
+foreach ($all as $p) if (fh_is_free($p)) { $freePlan = $p; break; }
+$plans = array_values(array_filter($all, fn($p) => !fh_is_free($p)));
 $sales = setting('fh_sales_enabled', '1') === '1';
 $faq = [
     ['Funciona para empresas de Marília?', 'Sim. O Fiscal Hub emite direto no SIGISS da Prefeitura de Marília usando a sua inscrição municipal (CCM) e a senha do portal — sem certificado digital. Para municípios conveniados ao padrão nacional, emitimos pelo Emissor Nacional com o seu certificado A1.'],
@@ -13,10 +16,13 @@ $faq = [
     ['Quais ramos de serviço são atendidos?', 'Todos os itens da lista de serviços (LC 116): saúde, tecnologia, consultoria, advocacia, contabilidade, construção civil (com dados da obra e deduções), eventos, educação, estética, manutenção, exportação de serviços e muito mais. O sistema trata ISS retido, imunidade, isenção, não incidência, exigibilidade suspensa, intermediário e retenções de PIS, COFINS, CSLL, IRRF e INSS.'],
     ['Como funciona a contratação?', 'Escolha o plano, aceite os termos e pague por PIX, boleto ou cartão. Assim que o pagamento é confirmado, o Fiscal Hub é liberado na sua Área do Cliente. Sem burocracia e sem fidelidade.'],
     ['Consigo baixar todas as notas para o meu contador?', 'Sim. Baixe o PDF e o XML de uma nota, das notas selecionadas ou do período inteiro em um arquivo ZIP, além de uma planilha com todos os valores e impostos.'],
+    ['O plano grátis é grátis mesmo?', 'Sim. O plano Grátis emite até ' . FH_FREE_NOTES . ' notas por mês para 1 empresa, com o financeiro incluído, sem cartão de crédito e sem prazo para acabar. Quando precisar de mais notas, empresas ou recursos, mude de plano pela sua área.'],
     ['Posso cancelar quando quiser?', 'Pode. Você continua emitindo até o fim do período pago e mantém o acesso para consultar e baixar suas notas.'],
+    ['O Fiscal Hub tem controle financeiro?', 'Tem. Contas a pagar e a receber (com parcelas e recorrências), fluxo de caixa com previsão, DRE e conciliação bancária. Cada nota emitida vira automaticamente uma conta a receber pelo valor líquido.'],
+    ['Como o extrato do banco entra no sistema?', 'De graça, de três formas: pelo Open Finance com a sua conta Meu Pluggy, pela API oficial do Banco Inter PJ ou do Asaas, ou importando o arquivo OFX que qualquer banco gera. As movimentações são sugeridas para conciliação com as suas contas, e o sistema aprende as categorias que você usa.'],
     ['O que acontece se eu passar do limite de notas?', 'O sistema avisa quando você chega a 80% do limite. Ao atingir o limite, você pode fazer upgrade do plano ou falar com a nossa equipe.'],
 ];
-page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviço', 'active' => '/fiscal-hub', 'description' => 'Emita NFS-e pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional em segundos. Cálculo de ISS e retenções, envio automático, downloads em lote e relatórios com IA. Planos a partir de R$ ' . number_format($plans[0]['price_monthly'] ?? 0, 2, ',', '.') . '/mês.']);
+page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviço', 'active' => '/fiscal-hub', 'description' => 'Emita NFS-e pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional em segundos. Cálculo de ISS e retenções, envio automático, downloads em lote e relatórios com IA. ' . ($freePlan ? 'Plano grátis com ' . $freePlan['notes_limit'] . ' notas por mês e p' : 'P') . 'lanos a partir de R$ ' . number_format($plans[0]['price_monthly'] ?? 0, 2, ',', '.') . '/mês.']);
 ?>
 <section class="page-hero fh-hero">
   <div class="container ai-wrap">
@@ -29,7 +35,7 @@ page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviç
         <a href="#planos" class="btn btn-primary btn-lg magnetic">Ver planos <?= icon('arrow') ?></a>
         <a href="#como-funciona" class="btn btn-ghost btn-lg">Como funciona</a>
       </div>
-      <ul class="fh-hero-points" data-reveal><li><?= icon('check') ?> Contratação 100% online</li><li><?= icon('check') ?> PIX, boleto ou cartão</li><li><?= icon('check') ?> Sem fidelidade</li></ul>
+      <ul class="fh-hero-points" data-reveal><?php if ($freePlan): ?><li><?= icon('check') ?> <?= (int)$freePlan['notes_limit'] ?> notas grátis por mês</li><?php endif; ?><li><?= icon('check') ?> Contratação 100% online</li><li><?= icon('check') ?> PIX, boleto ou cartão</li><li><?= icon('check') ?> Sem fidelidade</li></ul>
     </div>
     <div class="fh-mock" data-reveal="zoom" aria-hidden="true">
       <div class="fh-mock-card">
@@ -71,6 +77,8 @@ page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviç
           ['upload', 'Downloads em lote', 'PDF e XML de uma nota, das selecionadas ou do período inteiro em ZIP, mais planilha para o contador.'],
           ['brain', 'Relatórios com IA', 'Faturamento, impostos, clientes e serviços, com análise por IA e alertas de limite do MEI e do Simples.'],
           ['repeat', 'Notas recorrentes', 'Mensalidades emitidas automaticamente todo mês, no dia que você escolher.'],
+          ['cash', 'Financeiro completo', 'Contas a pagar e a receber, parcelas, recorrências, fluxo de caixa com previsão de 90 dias e DRE. Cada nota emitida já vira conta a receber.'],
+          ['plug', 'Extrato e conciliação', 'Open Finance (Meu Pluggy), APIs do Banco Inter e do Asaas ou arquivo OFX de qualquer banco. Sugestões automáticas e regras que aprendem com você.'],
           ['shield', 'Seguro e em conformidade', 'XML validado no leiaute oficial, certificado e senhas criptografados, cancelamento e substituição de notas.'],
       ] as [$ico, $t, $d]): ?>
         <div class="card spotlight" data-tilt="6"><div class="card-icon"><?= icon($ico) ?></div><h3><?= e($t) ?></h3><p><?= e($d) ?></p></div>
@@ -83,6 +91,15 @@ page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviç
   <div class="container">
     <div class="section-head center"><span class="kicker" data-reveal>Planos</span><h2 data-reveal>Preço justo, <span class="grad-text">10% abaixo da média</span> do mercado</h2>
       <p data-reveal>Pesquisamos os emissores de NFS-e usados em Marília e no Brasil e definimos nossos preços 10% abaixo da média de cada faixa.</p></div>
+    <?php if ($freePlan): ?>
+    <div class="card fh-free" data-reveal>
+      <div class="fh-free-main"><span class="fh-free-tag">Grátis para sempre</span><h3>Plano <?= e($freePlan['name']) ?> — <?= (int)$freePlan['notes_limit'] ?> notas por mês</h3>
+        <p class="muted">Sem cartão de crédito e sem prazo para acabar. Emissão no SIGISS de Marília e no Emissor Nacional, financeiro com contas a pagar e a receber, fluxo de caixa e conciliação bancária.</p></div>
+      <div class="fh-free-cta"><div class="fh-price"><small>R$</small><b>0</b><span>/mês</span></div>
+        <?php if ($sales): ?><a class="btn btn-primary btn-lg" href="/fiscal-hub-contratar?plano=<?= e($freePlan['code']) ?>">Começar grátis <?= icon('arrow') ?></a><?php endif; ?>
+        <small class="muted">Precisa de mais? Mude de plano quando quiser.</small></div>
+    </div>
+    <?php endif; ?>
     <div class="fh-cycle" data-reveal role="group" aria-label="Ciclo de cobrança"><button type="button" class="active" data-cycle="monthly">Mensal</button><button type="button" data-cycle="yearly">Anual <em>2 meses grátis</em></button></div>
     <div class="fh-pricing" data-stagger="0.06">
       <?php foreach ($plans as $p): ?>
@@ -112,19 +129,21 @@ page_start(['title' => 'Integra Fiscal Hub — emissor de nota fiscal de serviç
 <section class="section">
   <div class="container">
     <div class="section-head"><span class="kicker" data-reveal>Compare</span><h2 data-reveal>O que cada plano <span class="grad-text">inclui</span></h2></div>
+    <?php $cmp = $freePlan ? array_merge([$freePlan], $plans) : $plans; ?>
     <div class="fh-compare-wrap" data-reveal><table class="fh-compare">
-      <thead><tr><th>Recurso</th><?php foreach ($plans as $p): ?><th><?= e($p['name']) ?></th><?php endforeach; ?></tr></thead>
+      <thead><tr><th>Recurso</th><?php foreach ($cmp as $p): ?><th><?= e($p['name']) ?></th><?php endforeach; ?></tr></thead>
       <tbody>
-        <tr><td>Notas por mês</td><?php foreach ($plans as $p): ?><td><b><?= number_format($p['notes_limit'], 0, ',', '.') ?></b></td><?php endforeach; ?></tr>
-        <tr><td>Empresas (CNPJ/CPF)</td><?php foreach ($plans as $p): ?><td><?= (int)$p['companies_limit'] ?></td><?php endforeach; ?></tr>
-        <tr><td>SIGISS Marília + Emissor Nacional</td><?php foreach ($plans as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
-        <tr><td>Retenções federais, obra, evento, exportação</td><?php foreach ($plans as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
-        <tr><td>Downloads PDF/XML em lote e planilha</td><?php foreach ($plans as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
-        <tr><td>Análises com IA por mês</td><?php foreach ($plans as $p): ?><td><?= (int)$p['flags']['ai_quota'] ?></td><?php endforeach; ?></tr>
-        <tr><td>Notas recorrentes automáticas</td><?php foreach ($plans as $p): ?><td><?= $p['flags']['recurring'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
-        <tr><td>Emissão em lote por planilha</td><?php foreach ($plans as $p): ?><td><?= $p['flags']['batch'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
-        <tr><td>Suporte prioritário</td><?php foreach ($plans as $p): ?><td><?= $p['flags']['priority'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
-        <tr><td>Preço mensal</td><?php foreach ($plans as $p): ?><td><b><?= e(money($p['price_monthly'])) ?></b></td><?php endforeach; ?></tr>
+        <tr><td>Notas por mês</td><?php foreach ($cmp as $p): ?><td><b><?= number_format($p['notes_limit'], 0, ',', '.') ?></b></td><?php endforeach; ?></tr>
+        <tr><td>Empresas (CNPJ/CPF)</td><?php foreach ($cmp as $p): ?><td><?= (int)$p['companies_limit'] ?></td><?php endforeach; ?></tr>
+        <tr><td>SIGISS Marília + Emissor Nacional</td><?php foreach ($cmp as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
+        <tr><td>Retenções federais, obra, evento, exportação</td><?php foreach ($cmp as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
+        <tr><td>Downloads PDF/XML em lote e planilha</td><?php foreach ($cmp as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
+        <tr><td>Financeiro: contas, fluxo de caixa, DRE e conciliação</td><?php foreach ($cmp as $p): ?><td><?= icon('check') ?></td><?php endforeach; ?></tr>
+        <tr><td>Análises com IA por mês</td><?php foreach ($cmp as $p): ?><td><?= (int)$p['flags']['ai_quota'] ?></td><?php endforeach; ?></tr>
+        <tr><td>Notas recorrentes automáticas</td><?php foreach ($cmp as $p): ?><td><?= $p['flags']['recurring'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
+        <tr><td>Emissão em lote por planilha</td><?php foreach ($cmp as $p): ?><td><?= $p['flags']['batch'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
+        <tr><td>Suporte prioritário</td><?php foreach ($cmp as $p): ?><td><?= $p['flags']['priority'] ? icon('check') : '—' ?></td><?php endforeach; ?></tr>
+        <tr><td>Preço mensal</td><?php foreach ($cmp as $p): ?><td><b><?= fh_is_free($p) ? 'Grátis' : e(money($p['price_monthly'])) ?></b></td><?php endforeach; ?></tr>
       </tbody></table></div>
   </div>
 </section>

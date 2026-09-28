@@ -2,6 +2,8 @@
 declare(strict_types=1);
 
 require __DIR__ . '/inc/layout/site.php';
+require_once INC_PATH . '/nfse.php';
+require_once INC_PATH . '/fiscalhub.php';
 
 page_start(['title' => 'Integra SYS', 'active' => '/integra-sys', 'description' => 'Integra SYS: sistema de gestão modular na nuvem para PMEs — financeiro, estoque, vendas, CRM, fiscal, BI e atendimento.']);
 ?>
@@ -35,6 +37,16 @@ page_start(['title' => 'Integra SYS', 'active' => '/integra-sys', 'description' 
       <?php foreach (sys_modules() as [$ico, $name, $desc]): ?>
         <div class="card spotlight" data-tilt="6"><div class="card-icon"><?= icon($ico) ?></div><h3><?= e($name) ?></h3><p><?= e($desc) ?></p></div>
       <?php endforeach; ?>
+    </div>
+  </div>
+</section>
+
+<section class="section" style="padding-bottom:0">
+  <div class="container">
+    <div class="card sys-free" data-reveal>
+      <div><span class="kicker">Notas fiscais inclusas</span><h2 style="font-size:clamp(1.5rem,3vw,2.1rem);margin:6px 0 8px">Emita até <span class="grad-text"><?= FH_FREE_NOTES ?> notas fiscais por mês grátis</span></h2>
+        <p class="muted" style="margin:0;max-width:64ch">O módulo fiscal do Integra SYS usa o <b>Integra Fiscal Hub</b>: NFS-e pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional, com contas a pagar e a receber, fluxo de caixa e conciliação bancária. O plano Grátis tem <?= FH_FREE_NOTES ?> notas por mês, sem cartão e sem prazo.</p></div>
+      <div class="sys-free-cta"><a class="btn btn-primary btn-lg" href="/fiscal-hub-contratar?plano=<?= FH_FREE_PLAN ?>">Começar grátis <?= icon('arrow') ?></a><a class="btn btn-ghost" href="/fiscal-hub#planos">Ver todos os planos</a></div>
     </div>
   </div>
 </section>

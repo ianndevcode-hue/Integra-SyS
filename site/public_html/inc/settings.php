@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Keys listed in SECRET_SETTINGS are encrypted at rest.
  */
 
-const SECRET_SETTINGS = ['asaas_api_key', 'asaas_webhook_token', 'nfse_cert_pfx', 'nfse_cert_password', 'cloudflare_api_token', 'mail_password', 'mail_cf_token', 'google_client_secret', 'nfse_sigiss_password', 'search_api_key'];
+const SECRET_SETTINGS = ['asaas_api_key', 'asaas_webhook_token', 'nfse_cert_pfx', 'nfse_cert_password', 'cloudflare_api_token', 'mail_password', 'mail_cf_token', 'google_client_secret', 'nfse_sigiss_password', 'search_api_key', 'fh_pluggy_client_secret', 'fh_pluggy_api_key', 'fh_pluggy_webhook_token'];
 
 function setting(string $key, $default = null)
 {

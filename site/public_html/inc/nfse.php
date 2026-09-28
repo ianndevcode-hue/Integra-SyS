@@ -137,7 +137,7 @@ function nfse_certificate(): array
 function nfse_read_pfx(string $pfx, string $password): array
 {
     $certs = [];
-    if (!openssl_pkcs12_read($pfx, $certs, $password)) {
+    if (!@openssl_pkcs12_read($pfx, $certs, $password)) {
         while (openssl_error_string()) { /* drain the OpenSSL error queue */ }
         // Most ICP-Brasil A1 files use RC2-40/RC4, which OpenSSL 3 without the "legacy" provider
         // (Hostinger) refuses. Fall back to the pure-PHP reader instead of rejecting the file.
@@ -157,6 +157,7 @@ function nfse_read_pfx(string $pfx, string $password): array
     return [
         'cert' => $certs['cert'],
         'key' => $certs['pkey'],
+        'chain' => array_values(array_filter((array)($certs['extracerts'] ?? []), 'is_string')),
         'info' => [
             'subject' => $cn,
             'cnpj' => $m[1] ?? null,
@@ -202,8 +203,16 @@ function nfse_sign(string $xml, string $tag, array $certificate): string
     $node->parentNode->appendChild($signature);
 
     $raw = '';
-    if (!openssl_sign($signedInfo->C14N(true, false), $raw, $certificate['key'], OPENSSL_ALGO_SHA1)) {
-        throw new NfseException('Falha ao assinar com SHA1 (o OpenSSL do servidor pode estar com SHA1 desativado): ' . (openssl_error_string() ?: ''));
+    $data = $signedInfo->C14N(true, false);
+    if (!@openssl_sign($data, $raw, $certificate['key'], OPENSSL_ALGO_SHA1)) {
+        // Some OpenSSL 3 builds (crypto policies) refuse SHA-1 signatures. RSA PKCS#1 v1.5 over the
+        // SHA-1 DigestInfo is exactly the same signature, produced without the digest policy check.
+        $err = openssl_error_string() ?: '';
+        while (openssl_error_string()) { /* drain */ }
+        $raw = '';
+        if (!openssl_private_encrypt(hex2bin('3021300906052b0e03021a05000414') . sha1($data, true), $raw, $certificate['key'], OPENSSL_PKCS1_PADDING)) {
+            throw new NfseException('Falha ao assinar o XML com o certificado digital: ' . ($err ?: (openssl_error_string() ?: 'erro desconhecido')));
+        }
     }
     $add($signature, 'SignatureValue', [], base64_encode($raw));
     $keyInfo = $add($signature, 'KeyInfo');
@@ -387,7 +396,7 @@ function nfse_http(string $method, string $url, ?array $body, array $certificate
     if (!is_dir($dir)) @mkdir($dir, 0700, true);
     $certFile = tempnam($dir, 'c');
     $keyFile = tempnam($dir, 'k');
-    file_put_contents($certFile, $certificate['cert']);
+    file_put_contents($certFile, $certificate['cert'] . implode('', $certificate['chain'] ?? [])); // leaf + intermediates for mTLS
     file_put_contents($keyFile, $certificate['key']);
     @chmod($certFile, 0600);
     @chmod($keyFile, 0600);

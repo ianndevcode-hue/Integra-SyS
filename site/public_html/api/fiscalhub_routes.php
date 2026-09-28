@@ -49,7 +49,7 @@ route('POST', '/fh/checkout', function () {
     if (!empty($in['website'])) json_out(['ok' => true]);
     if (!verify_csrf($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($in['csrf'] ?? null))) json_error('Sessão expirada. Recarregue a página.', 419);
     $r = fh_checkout($in, current_customer());
-    json_out(['ok' => true, 'subscription_id' => $r['subscription']['id'], 'pay_url' => $r['pay_url'], 'error' => $r['error'], 'portal' => '/cliente/fiscal/#/assinatura']);
+    json_out(['ok' => true, 'subscription_id' => $r['subscription']['id'], 'pay_url' => $r['pay_url'], 'error' => $r['error'], 'free' => !empty($r['free']), 'portal' => !empty($r['free']) ? '/cliente/fiscal/#/empresa/nova' : '/cliente/fiscal/#/assinatura']);
 });
 
 route('GET', '/fh/plans', function () {
@@ -83,7 +83,7 @@ route('GET', '/fh/cnpj/{cnpj}', function ($p) {
     if (!throttle('fh-cnpj', 30, 600)) json_error('Muitas consultas seguidas.', 429);
     $cnpj = only_digits((string)$p['cnpj']);
     if (!fh_valid_doc($cnpj) || strlen($cnpj) !== 14) json_error('CNPJ inválido.', 422);
-    $ch = curl_init("https://brasilapi.com.br/api/cnpj/v1/$cnpj");
+    $ch = curl_init(rtrim((string)config('cnpj_api_url', 'https://brasilapi.com.br/api/cnpj/v1'), '/') . "/$cnpj");
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 12, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_HTTPHEADER => ['User-Agent: IntegraFiscalHub/1.0']]);
     $raw = curl_exec($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -383,6 +383,7 @@ route('POST', '/fh/subscription/pay', function () {
     $c = fh_customer_guard();
     $sub = fh_subscription((int)$c['id']);
     if (!$sub || $sub['status'] === 'canceled') json_error('Nenhuma assinatura para pagar.', 404);
+    if (fh_is_free($sub)) json_error('Seu plano é gratuito: não há nada a pagar.', 422);
     if ($open = fh_open_charge((int)$sub['id'])) {
         try { $open = refresh_charge($open); } catch (Throwable $e) { /* keep */ }
         if (in_array($open['status'], ASAAS_PAID_STATUSES, true)) json_out(['paid' => true, 'access' => fh_access((int)$c['id'])]);
@@ -475,7 +476,7 @@ route('PUT', '/fh-admin/plans/{id}', function ($p) {
     $d = validate_fields(['name' => ['type' => 'string', 'max' => 80], 'tagline' => ['type' => 'string', 'max' => 200], 'price_monthly' => ['type' => 'decimal'], 'price_yearly' => ['type' => 'decimal'],
         'notes_limit' => ['type' => 'int'], 'companies_limit' => ['type' => 'int'], 'highlight' => ['type' => 'bool'], 'active' => ['type' => 'bool']], $in, true);
     if (isset($in['features'])) $d['features'] = json_encode(array_values(array_filter(array_map('trim', is_array($in['features']) ? $in['features'] : explode("\n", (string)$in['features'])))), JSON_UNESCAPED_UNICODE);
-    if (isset($in['flags']) && is_array($in['flags'])) $d['flags'] = json_encode(['ai_quota' => max(0, (int)($in['flags']['ai_quota'] ?? 0)), 'recurring' => !empty($in['flags']['recurring']), 'batch' => !empty($in['flags']['batch']), 'priority' => !empty($in['flags']['priority'])]);
+    if (isset($in['flags']) && is_array($in['flags'])) $d['flags'] = json_encode(['ai_quota' => max(0, (int)($in['flags']['ai_quota'] ?? 0)), 'recurring' => !empty($in['flags']['recurring']), 'batch' => !empty($in['flags']['batch']), 'priority' => !empty($in['flags']['priority']), 'open_finance' => !empty($in['flags']['open_finance'])]);
     db_update('fh_plans', (int)$plan['id'], $d + ['updated_at' => now()]);
     audit('update', 'fh_plan', $plan['id'], array_keys($d));
     json_out(fh_plan_row(db_find('fh_plans', (int)$plan['id'])));

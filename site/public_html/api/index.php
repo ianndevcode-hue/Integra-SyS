@@ -1364,14 +1364,14 @@ route('DELETE', '/distributions/{id}', function ($p) {
 const EDITABLE_SETTINGS = ['nfse_provider', 'nfse_sigiss_password', 'nfse_sigiss_servico', 'nfse_sigiss_situacao', 'nfse_sigiss_url', 'company_name', 'company_cnpj', 'company_email', 'company_phone', 'asaas_environment', 'asaas_api_key', 'profit_reserve_percent', 'ticket_sla_hours', 'appointment_slot_minutes', 'project_stage_template',
     'ticket_sla_urgent', 'ticket_sla_high', 'ticket_sla_normal', 'ticket_sla_low', 'ticket_autoclose_days', 'ticket_csat_enabled', 'ticket_auto_assign', 'portal_uploads_enabled',
     'goal_revenue_month', 'cost_per_hour', 'default_hourly_rate',
-    'fh_sales_enabled', 'fh_grace_days', 'fh_lead_days', 'fh_revenue_category',
+    'fh_sales_enabled', 'fh_grace_days', 'fh_lead_days', 'fh_revenue_category', 'fh_openfinance_enabled', 'fh_pluggy_client_id', 'fh_pluggy_client_secret',
     'search_api_key', 'contracts_lead_days', 'contracts_auto_renew', 'contracts_auto_billing', 'pricing_setup_category', 'pricing_monthly_category',
     'nfse_pis_rate', 'nfse_cofins_rate', 'nfse_csll_rate', 'nfse_irrf_rate', 'nfse_inss_rate', 'nfse_pis_cofins_cst', 'nfse_withhold_federal_pj', 'nfse_total_tax_pct', 'nfse_show_taxes',
     'nfse_environment', 'nfse_cnpj', 'nfse_im', 'nfse_city_code', 'nfse_op_simp_nac', 'nfse_reg_ap_trib_sn', 'nfse_reg_esp_trib', 'nfse_serie', 'nfse_next_number', 'nfse_ctribnac', 'nfse_cnbs', 'nfse_aliquota', 'nfse_simples_percent', 'nfse_default_description', 'nfse_auto_on_payment',
     'cloudflare_account_id', 'cloudflare_api_token', 'ai_model', 'ai_chat_enabled', 'ai_diagnostic_enabled', 'ai_admin_enabled',
     'mail_enabled', 'mail_provider', 'mail_cf_token', 'mail_host', 'mail_port', 'mail_encryption', 'mail_username', 'mail_password', 'mail_from_email', 'mail_from_name', 'mail_reply_to', 'mail_notify_to', 'mail_charge_emails', 'mail_nfse_emails',
     'google_client_id', 'google_client_secret', 'google_login_enabled', 'portal_signup_enabled'];
-const MASKED_SETTINGS = ['asaas_api_key', 'cloudflare_api_token', 'mail_password', 'mail_cf_token', 'google_client_secret', 'nfse_sigiss_password', 'search_api_key'];
+const MASKED_SETTINGS = ['asaas_api_key', 'cloudflare_api_token', 'mail_password', 'mail_cf_token', 'google_client_secret', 'nfse_sigiss_password', 'search_api_key', 'fh_pluggy_client_secret'];
 
 route('GET', '/settings', function () {
     guard('users');
@@ -1410,6 +1410,8 @@ route('PUT', '/settings', function () {
         if (in_array($k, ['nfse_pis_rate', 'nfse_cofins_rate', 'nfse_csll_rate', 'nfse_irrf_rate', 'nfse_inss_rate', 'nfse_total_tax_pct'], true) && $v !== '') $v = (string)max(0, min(100, round((float)str_replace(',', '.', $v), 2)));
         if ($k === 'contracts_lead_days') $v = (string)max(0, min(40, (int)$v));
         if ($k === 'nfse_pis_cofins_cst' && $v !== '' && !preg_match('/^\d{2}$/', $v)) continue;
+        if ($k === 'fh_openfinance_enabled') $v = $v === '1' ? '1' : '0';
+        if (in_array($k, ['fh_pluggy_client_id', 'fh_pluggy_client_secret'], true)) set_setting('fh_pluggy_api_key', ''); // new credentials: fetch a new API key
         if (in_array($k, ['goal_revenue_month', 'cost_per_hour', 'default_hourly_rate'], true)) $v = (string)max(0, round((float)(strpos($v, ',') !== false ? str_replace(['.', ','], ['', '.'], $v) : $v), 2));
         set_setting($k, $v);
     }
@@ -1716,6 +1718,7 @@ route('GET', '/ai/usage', function () {
 });
 
 require __DIR__ . '/fiscalhub_routes.php';
+require __DIR__ . '/fiscalhub_finance_routes.php';
 
 /* ================================================== EXPORTS + GENERIC CRUD */
 

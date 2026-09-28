@@ -785,8 +785,10 @@ function fh_sigiss_fields(array $inv, array $em): array
         'retencao_pis' => ['xsd:int', $inv['pis_withheld'] ? '1' : ''], 'retencao_cofins' => ['xsd:int', $inv['cofins_withheld'] ? '1' : ''], 'retencao_csll' => ['xsd:int', $inv['csll_withheld'] ? '1' : ''],
         'valor_total_tributos' => ['xsd:string', (float)$inv['total_taxes_amount'] > 0 ? $m($inv['total_taxes_amount']) : ''],
         'dia_retro' => ['xsd:int', $retro ? date('j', $retro) : ''], 'mes_retro' => ['xsd:int', $retro ? date('n', $retro) : ''], 'ano_retro' => ['xsd:int', $retro ? date('Y', $retro) : ''],
-        'xnbs' => ['xsd:string', (string)($inv['cnbs'] ?? '')],
-        'dps_serv_cnbs' => ['xsd:int', ''],
+        // SIGISS: "xnbs" is the NBS *description* and "dps_serv_cnbs" the 9-digit code. Sending the code in
+        // xnbs left dps_serv_cnbs empty, so the prefeitura rejected the NBS. Description is optional.
+        'xnbs' => ['xsd:string', ''],
+        'dps_serv_cnbs' => ['xsd:string', only_digits((string)($inv['cnbs'] ?? ''))],
         'dps_serv_mdprestacao' => ['xsd:int', $c['modo'] ?? ''], 'dps_serv_mecafcomexp' => ['xsd:int', isset($c['mec_prest']) ? (string)(int)$c['mec_prest'] : ''],
         'dps_serv_mecafcomext' => ['xsd:int', isset($c['mec_toma']) ? (string)(int)$c['mec_toma'] : ''], 'dps_serv_vincprest' => ['xsd:int', $c['vinculo'] ?? ''],
         'dps_serv_tpmoeda' => ['xsd:string', $c['moeda'] ?? ''], 'dps_serv_vservmoeda' => ['xsd:string', $c ? $m($c['valor_moeda'] ?: $inv['amount']) : ''],
@@ -797,6 +799,41 @@ function fh_sigiss_fields(array $inv, array $em): array
 
 /* -------------------------------------------------------------- transmit */
 
+/** Financial side effects of an invoice (receivables); never breaks the emission itself. */
+function fh_finance_hook(string $fn, ?array $inv): void
+{
+    if (!$inv || !function_exists($fn)) return;
+    try { $fn($inv); } catch (Throwable $e) { log_line('fiscalhub', 'finance hook failed', ['fn' => $fn, 'invoice' => $inv['id'] ?? null, 'error' => $e->getMessage()]); }
+}
+
+/**
+ * Drafts keep the channel (SIGISS/Emissor Nacional) chosen when they were saved. When the company
+ * switched channels since then, adapt the draft before transmitting instead of sending it to the
+ * old channel.
+ */
+function fh_invoice_sync_channel(array $inv, array $em): array
+{
+    $env = $em['provider'] === 'sigiss' ? 'production' : ($em['environment'] === 'production' ? 'production' : 'homologation');
+    if ($inv['provider'] === $em['provider'] && $inv['environment'] === $env) return $inv;
+    $upd = ['provider' => $em['provider'], 'environment' => $env, 'updated_at' => now()];
+    $sit = (string)($inv['sigiss_situacao'] ?: 'tp');
+    if ($em['provider'] === 'sigiss') {
+        $code = only_digits((string)$inv['sigiss_code']) ?: ($inv['lc116'] ? fh_lc_to_sigiss((string)$inv['lc116']) : '');
+        if ($code === '') throw new AppException('Esta nota foi criada para o Emissor Nacional. Abra a nota e informe o código do serviço no SIGISS (ou o item da LC 116) antes de emitir.');
+        if ($sit === 'es') throw new AppException('O SIGISS de Marília não aceita exigibilidade suspensa pelo webservice. Edite a nota ou emita pelo portal da prefeitura.');
+        if ($sit === 'ti') { $upd['sigiss_situacao'] = 'tt'; [$upd['trib_issqn'], $upd['iss_retention']] = FH_ISS_SITUATIONS['tt']; }
+        $upd['sigiss_code'] = $code;
+    } else {
+        $ctrib = only_digits((string)$inv['ctribnac']) ?: ($inv['lc116'] ? fh_lc_to_ctribnac((string)$inv['lc116']) : '');
+        if (strlen($ctrib) !== 6) throw new AppException('Esta nota foi criada para o SIGISS. Abra a nota e informe o código de tributação nacional (ou o item da LC 116) antes de emitir.');
+        $x = json_decode((string)$inv['extra'], true) ?: [];
+        if ($sit === 'is' && empty($x['bm'])) throw new AppException('No Emissor Nacional, a isenção exige o número do benefício municipal. Edite a nota antes de emitir.');
+        $upd['ctribnac'] = $ctrib;
+    }
+    db_update('fh_invoices', (int)$inv['id'], $upd);
+    return db_find('fh_invoices', (int)$inv['id']);
+}
+
 function fh_transmit(int $id, ?int $customerId = null): array
 {
     $inv = db_find('fh_invoices', $id);
@@ -806,6 +843,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
     fh_require_emit((int)$inv['customer_id']);
     $em = db_find('fh_emitters', (int)$inv['emitter_id']);
     if ($problems = fh_emitter_problems($em)) throw new AppException('Complete o cadastro da empresa antes de emitir: ' . implode(' ', $problems));
+    $inv = fh_invoice_sync_channel($inv, $em);
     $fail = function (string $msg, array $details = []) use ($id) {
         db_update('fh_invoices', $id, ['status' => 'rejected', 'error_message' => implode("\n", array_merge([$msg], $details)), 'updated_at' => now()]);
         throw new NfseException($msg, $details);
@@ -874,9 +912,11 @@ function fh_transmit(int $id, ?int $customerId = null): array
     $inv = db_find('fh_invoices', $id);
     $x = json_decode((string)$inv['extra'], true) ?: [];
     if (!empty($x['subst']['invoice_id'])) {
-        db_exec("UPDATE fh_invoices SET status = 'canceled', canceled_at = ?, cancel_reason = ?, updated_at = ? WHERE id = ? AND customer_id = ? AND status = 'authorized'",
+        $replaced = db_exec("UPDATE fh_invoices SET status = 'canceled', canceled_at = ?, cancel_reason = ?, updated_at = ? WHERE id = ? AND customer_id = ? AND status = 'authorized'",
             [now(), 'Substituída pela NFS-e ' . ($inv['nfse_number'] ?: $inv['dps_number']), now(), (int)$x['subst']['invoice_id'], $inv['customer_id']]);
+        if ($replaced) fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', (int)$x['subst']['invoice_id']));
     }
+    fh_finance_hook('fhf_on_invoice_authorized', $inv);
     if ((int)$em['auto_email'] && $inv['toma_email'] && $inv['environment'] === 'production') {
         try { fh_email_invoice($inv, $em); } catch (Throwable $e) { log_line('fiscalhub', 'email failed', ['id' => $id, 'error' => $e->getMessage()]); }
     }
@@ -899,6 +939,7 @@ function fh_cancel(int $id, int $customerId, int $reason, string $justification)
         ]]], $cfg['url']);
         if (sigiss_value($xp, 'Resultado') !== '1') throw new NfseException('A Prefeitura (SIGISS) recusou o cancelamento.', sigiss_errors($xp) ?: ['Motivo não informado.']);
         db_update('fh_invoices', $id, ['status' => 'canceled', 'cancel_reason' => $justification, 'canceled_at' => now(), 'updated_at' => now()]);
+        fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
         return db_find('fh_invoices', $id);
     }
     if (!$inv['access_key']) throw new AppException('Nota sem chave de acesso.');
@@ -924,6 +965,7 @@ function fh_cancel(int $id, int $customerId, int $reason, string $justification)
     $res = nfse_http('POST', $base . '/nfse/' . $inv['access_key'] . '/eventos', ['pedidoRegistroEventoXmlGZipB64' => nfse_gzb64($signed)], $cert);
     if ($res['status'] >= 400) throw new NfseException('O cancelamento foi recusado.', nfse_errors($res['json']) ?: ['HTTP ' . $res['status']]);
     db_update('fh_invoices', $id, ['status' => 'canceled', 'cancel_reason' => $justification, 'canceled_at' => now(), 'xml_cancel' => nfse_ungzb64($res['json']['eventoXmlGZipB64'] ?? null), 'updated_at' => now()]);
+    fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
     return db_find('fh_invoices', $id);
 }
 

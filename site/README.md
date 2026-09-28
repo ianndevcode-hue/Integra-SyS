@@ -96,7 +96,7 @@ Com isso, quando um cliente paga, a cobrança vira "Recebida" e a conta a recebe
 O painel emite a NFS-e por **dois emissores**. Escolha um em Painel → Configurações → NFS-e → *Emissor*:
 
 ### a) SIGISS Marília (recomendado para Marília-SP)
-Webservice oficial da prefeitura (`https://marilia.sigiss.com.br/marilia/ws/sigiss_ws.php`, SOAP, manual "WebService SIGISS 2.0"). Usa o **CCM (inscrição municipal)** e a **senha do SIGISS**. Não precisa de certificado digital. A nota é gerada na hora e o link oficial de impressão fica salvo.
+Webservice oficial da prefeitura (`https://testemarilia.sigissweb.com/…`, SOAP, manual "WebService SigissWeb"). Usa o **CCM (inscrição municipal)** e a **senha do SIGISS**. Não precisa de certificado digital. A nota é gerada na hora e o link oficial de impressão fica salvo.
 1. Preencha CNPJ e **inscrição municipal (CCM)** em "Dados do emissor".
 2. Em SIGISS, informe a **senha do SIGISS**, o **código do serviço** do seu cadastro municipal (ex.: 101) e a **situação** (normalmente *tp: tributada no prestador*).
 3. Clique em **"Salvar e testar acesso ao SIGISS"**. O sistema autentica sem emitir nota.
@@ -106,7 +106,7 @@ Webservice oficial da prefeitura (`https://marilia.sigiss.com.br/marilia/ws/sigi
 
 ### b) Sistema Nacional (Sefin Nacional)
 Direto na API nacional: DPS no leiaute oficial v1.01 → validação local contra os XSDs oficiais (`inc/nfse-schemas`) → assinatura XMLDSig (RSA-SHA1) com o **certificado A1 (e-CNPJ ICP-Brasil)** → envio por mTLS.
-1. Envie o arquivo **.pfx do e-CNPJ A1** e a senha. Ficam criptografados no banco. Certificados com criptografia antiga (RC2/RC4, o padrão da maioria das certificadoras) são lidos por `inc/pkcs12.php` quando o OpenSSL 3 do servidor não tem o "legacy provider" — não é preciso reexportar o arquivo.
+1. Envie o arquivo **.pfx do e-CNPJ A1** e a senha. Ficam criptografados no banco.
 2. Confira o município (3529005 = Marília-SP), o regime do Simples, a série e o próximo número da DPS.
 3. Defina **cTribNac** (ex.: 010101) e **NBS** (ex.: 115022000). Confirme com a sua contabilidade.
 4. Comece em **Produção restrita**, use **"Verificar município no Sistema Nacional"** e só depois troque para **Produção**. Se o município não tiver convênio para o seu CNPJ, a Sefin recusa. Nesse caso use o SIGISS.

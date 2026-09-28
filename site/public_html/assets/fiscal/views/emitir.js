@@ -207,12 +207,13 @@ export async function render(el, ctx) {
   $('[data-t-cep]', el).addEventListener('click', () => cepFill(F.t_cep.value).catch(toastError));
   F.t_cep.addEventListener('change', () => { if (F.t_cep.value.replace(/\D/g, '').length === 8) cepFill(F.t_cep.value).catch(() => {}); });
   $('[data-t-cnpj]', el).addEventListener('click', async (e) => {
-    e.currentTarget.classList.add('loading');
+    const btn = e.currentTarget;
+    btn.classList.add('loading');
     try {
       const r = await api('/fh/cnpj/' + F.t_document.value.replace(/\D/g, ''));
       F.t_name.value = r.legal_name; F.t_email.value = F.t_email.value || r.email; F.t_cep.value = r.cep; F.t_street.value = r.street; F.t_number.value = r.number; F.t_complement.value = r.complement;
       F.t_district.value = r.district; F.t_city.value = r.city + '/' + r.uf; F.t_uf.value = r.uf; F.t_city_ibge.value = r.city_ibge; F.t_phone.value = r.phone;
-    } catch (err) { toastError(err); } finally { e.currentTarget?.classList.remove('loading'); }
+    } catch (err) { toastError(err); } finally { btn.classList.remove('loading'); }
   });
   if (inv && !inv.taker_id && inv.taker) {
     openNew();

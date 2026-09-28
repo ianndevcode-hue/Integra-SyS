@@ -9,7 +9,8 @@ export function renderNoPlan(root) {
     <div class="auth-logo">${BRAND_MARK}<b class="fh-name">Integra <span>Fiscal Hub</span></b></div>
     <h1>Emita suas notas fiscais de serviço em segundos</h1>
     <p class="muted">SIGISS de Marília e Emissor Nacional, cálculo automático de ISS e retenções, envio ao cliente, downloads em lote e relatórios com IA.</p>
-    <a class="btn btn-primary btn-block" href="/fiscal-hub#planos">Ver planos e contratar</a>
+    <a class="btn btn-primary btn-block" href="/fiscal-hub-contratar?plano=gratis">Começar grátis — 15 notas por mês</a>
+    <a class="btn btn-block" href="/fiscal-hub#planos" style="margin-top:8px">Ver todos os planos</a>
     <a class="btn btn-ghost btn-block" href="/cliente/" style="margin-top:8px">Voltar à Área do Cliente</a></div></div>`;
 }
 
@@ -23,14 +24,14 @@ export async function render(el) {
     <div class="page-head"><div><h2>Assinatura</h2><p>Plano, pagamentos e limites do seu Fiscal Hub.</p></div></div>
     <div class="grid g3">
       <section class="card span-2 fh-plan-card"><div class="card-head"><div><h3>Plano ${esc(cur.name || s.plan_code)}</h3><small class="muted">${esc(cur.tagline || '')}</small></div>${badge('fh_sub_status', s.status)}</div><div class="card-body">
-        <div class="fh-plan-price"><b>${money(s.price)}</b><span>/${s.cycle === 'yearly' ? 'ano' : 'mês'}</span></div>
+        <div class="fh-plan-price">${Number(s.price) > 0 ? `<b>${money(s.price)}</b><span>/${s.cycle === 'yearly' ? 'ano' : 'mês'}</span>` : '<b>Grátis</b><span>sem cobrança</span>'}</div>
         <dl class="kv">
-          <dt>Acesso liberado até</dt><dd>${s.paid_until ? `<b>${date(s.paid_until)}</b>` : '—'}${a.grace_until && a.state === 'grace' ? ` · tolerância até ${date(a.grace_until)}` : ''}</dd>
-          <dt>Próxima cobrança</dt><dd>${s.next_charge_date && s.status !== 'canceled' ? date(s.next_charge_date) : '—'}</dd>
+          ${Number(s.price) > 0 ? `<dt>Acesso liberado até</dt><dd>${s.paid_until ? `<b>${date(s.paid_until)}</b>` : '—'}${a.grace_until && a.state === 'grace' ? ` · tolerância até ${date(a.grace_until)}` : ''}</dd>
+          <dt>Próxima cobrança</dt><dd>${s.next_charge_date && s.status !== 'canceled' ? date(s.next_charge_date) : '—'}</dd>` : `<dt>Cobrança</dt><dd>Nenhuma — renovação automática e gratuita</dd>`}
           <dt>Contratado em</dt><dd>${datetime(s.created_at)}${s.terms_version ? ` · termos v${esc(s.terms_version)} aceitos por ${esc(s.terms_name || '')}` : ''}</dd>
         </dl>
         ${d.open_charge ? `<div class="alert ${d.open_charge.status === 'OVERDUE' ? 'alert-danger' : 'alert-info'}" style="margin:14px 0 0"><div><b>Fatura em aberto: ${money(d.open_charge.amount)}</b> · vence ${date(d.open_charge.due_date)}</div><div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${d.open_charge.invoice_url ? `<a class="btn btn-primary btn-sm" href="${esc(d.open_charge.invoice_url)}" target="_blank" rel="noopener">${icon('receipt')} Pagar (PIX, boleto ou cartão)</a>` : ''}<button class="btn btn-sm" data-check>${icon('refresh')} Já paguei — verificar</button></div></div>`
-          : ['pending', 'expired', 'grace'].includes(a.state) && s.status !== 'canceled' ? `<div class="alert alert-warning" style="margin:14px 0 0">${esc(a.message || '')}<div style="margin-top:10px"><button class="btn btn-primary btn-sm" data-pay>${icon('receipt')} Gerar pagamento</button></div></div>` : ''}
+          : ['pending', 'expired', 'grace'].includes(a.state) && s.status !== 'canceled' && Number(s.price) > 0 ? `<div class="alert alert-warning" style="margin:14px 0 0">${esc(a.message || '')}<div style="margin-top:10px"><button class="btn btn-primary btn-sm" data-pay>${icon('receipt')} Gerar pagamento</button></div></div>` : ''}
       </div></section>
       <section class="card"><div class="card-head"><h3>Uso neste mês</h3></div><div class="card-body fh-usage">
         ${bar('Notas fiscais', u.notes_used, u.notes_limit)}${bar('Empresas', u.companies, u.companies_limit)}${bar('Análises com IA', u.ai_used, u.ai_limit)}
@@ -50,10 +51,10 @@ export async function render(el) {
   const drawPlans = () => {
     $('[data-plans]', el).innerHTML = d.plans.map((p) => {
       const price = cycle === 'yearly' ? p.price_yearly : p.price_monthly;
-      const current = p.code === s.plan_code && cycle === s.cycle;
+      const current = p.code === s.plan_code && (cycle === s.cycle || Number(p.price_monthly) <= 0);
       return `<article class="card fh-pcard ${p.highlight ? 'hl' : ''} ${current ? 'current' : ''}"><div class="card-body">
         <h4>${esc(p.name)}</h4><small class="muted">${esc(p.tagline)}</small>
-        <div class="fh-plan-price"><b>${money(price)}</b><span>/${cycle === 'yearly' ? 'ano' : 'mês'}</span></div>
+        <div class="fh-plan-price">${Number(price) > 0 ? `<b>${money(price)}</b><span>/${cycle === 'yearly' ? 'ano' : 'mês'}</span>` : '<b>Grátis</b>'}</div>
         <ul>${p.features.slice(0, 4).map((f) => `<li>${icon('check')} ${esc(f)}</li>`).join('')}</ul>
         <button class="btn btn-block ${current ? '' : 'btn-primary'}" data-plan="${p.code}" ${current ? 'disabled' : ''}>${current ? 'Plano atual' : 'Escolher'}</button></div></article>`;
     }).join('');
@@ -64,10 +65,13 @@ export async function render(el) {
     const b = e.target.closest('[data-plan]');
     if (!b) return;
     const p = d.plans.find((x) => x.code === b.dataset.plan);
-    if (!await confirmDialog(`Mudar para o plano ${p.name} (${cycle === 'yearly' ? 'anual' : 'mensal'}) por ${money(cycle === 'yearly' ? p.price_yearly : p.price_monthly)}? ${s.status === 'pending' ? 'Uma nova fatura será gerada.' : 'O novo valor vale a partir da próxima renovação.'}`, { okLabel: 'Confirmar' })) return;
+    const newPrice = cycle === 'yearly' ? p.price_yearly : p.price_monthly;
+    const msg = Number(newPrice) <= 0 ? `Mudar para o plano ${p.name}? Você passa a ter ${p.notes_limit} notas por mês e ${p.companies_limit} empresa, sem cobrança.`
+      : `Mudar para o plano ${p.name} (${cycle === 'yearly' ? 'anual' : 'mensal'}) por ${money(newPrice)}? ${s.status === 'pending' || Number(s.price) <= 0 ? 'Uma fatura é gerada agora; pague para manter a emissão liberada.' : 'O novo valor vale a partir da próxima renovação.'}`;
+    if (!await confirmDialog(msg, { okLabel: 'Confirmar' })) return;
     try {
       const r = await api('/fh/subscription/plan', { method: 'POST', body: { plan: p.code, cycle } });
-      toast('Plano alterado.');
+      toast(r.error || 'Plano alterado.', r.error ? 'error' : 'success');
       if (r.pay_url) window.open(r.pay_url, '_blank');
       window.dispatchEvent(new Event('fh:reload'));
     } catch (err) { toastError(err); }

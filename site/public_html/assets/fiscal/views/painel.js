@@ -8,10 +8,11 @@ export async function render(el) {
   const start6 = new Date(); start6.setMonth(start6.getMonth() - 5); start6.setDate(1);
   const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const monthStart = today().slice(0, 8) + '01';
-  const [rep6, repMonth, recent] = await Promise.all([
+  const [rep6, repMonth, recent, fin] = await Promise.all([
     api('/fh/reports', { query: { start: iso(start6), end: today() } }),
     api('/fh/reports', { query: { start: monthStart, end: today() } }),
     api('/fh/invoices', { query: { per_page: 8, sort: 'created_at', dir: 'desc' } }),
+    api('/fh/fin/summary').catch(() => null),
   ]);
   const k = repMonth.kpis;
   const u = a.usage || {};
@@ -32,6 +33,12 @@ export async function render(el) {
       <div class="card kpi"><div class="k-label"><span class="k-ico violet">${icon('receipt')}</span>ISS do mês</div><div class="k-value">${money(k.iss_due)}</div><div class="k-sub">a recolher · retido pelos clientes ${money(k.iss_withheld)}</div></div>
       <div class="card kpi"><div class="k-label"><span class="k-ico blue">${icon('wallet')}</span>Líquido a receber</div><div class="k-value">${money(k.net)}</div><div class="k-sub">retenções federais ${money(k.federal_withheld)}</div></div>
     </div>
+    ${fin ? `<a class="card fh-fin-strip" href="#/financeiro">
+      <div><span>${icon('bank')} Saldo em contas</span><b class="${fin.balance < 0 ? 'neg' : ''}">${money(fin.balance)}</b></div>
+      <div><span>${icon('trendUp')} A receber no mês</span><b>${money(fin.receivable.month.amount)}</b>${fin.receivable.overdue.amount ? `<small class="neg">${money(fin.receivable.overdue.amount)} vencido</small>` : ''}</div>
+      <div><span>${icon('trendDown')} A pagar no mês</span><b>${money(fin.payable.month.amount)}</b>${fin.payable.overdue.amount ? `<small class="neg">${money(fin.payable.overdue.amount)} vencido</small>` : ''}</div>
+      <div><span>${icon('link')} Extrato a conciliar</span><b>${fin.pending_reconciliation}</b></div>
+      <em>Financeiro ${icon('arrowRight')}</em></a>` : ''}
     <div class="grid g3">
       <section class="card span-2"><div class="card-head"><h3>Faturamento com notas (6 meses)</h3><a class="btn btn-sm btn-ghost" href="#/relatorios">Relatórios ${icon('arrowRight')}</a></div><div class="card-body"><div class="chart-box"><canvas id="fh-ch"></canvas></div></div></section>
       <section class="card"><div class="card-head"><h3>Uso do plano</h3><a class="btn btn-sm btn-ghost" href="#/assinatura">${esc(a.plan?.name || '')}</a></div><div class="card-body fh-usage">

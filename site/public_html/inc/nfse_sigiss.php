@@ -157,7 +157,7 @@ function cep_lookup(string $cep): ?array
 {
     $cep = only_digits($cep);
     if (strlen($cep) !== 8) return null;
-    $ch = curl_init("https://viacep.com.br/ws/$cep/json/");
+    $ch = curl_init(rtrim((string)config('cep_api_url', 'https://viacep.com.br/ws'), '/') . "/$cep/json/");
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10, CURLOPT_CONNECTTIMEOUT => 5]);
     $raw = curl_exec($ch);
     curl_close($ch);
@@ -246,7 +246,8 @@ function sigiss_transmit(int $id): array
         'irrf' => ['xsd:string', !empty($inv['irrf_withheld']) ? sigiss_money($inv['irrf_amount']) : ''],
         'csll' => ['xsd:string', (float)($inv['csll_amount'] ?? 0) > 0 ? sigiss_money($inv['csll_amount']) : ''],
         'valor_total_tributos' => ['xsd:string', (float)($inv['total_taxes_amount'] ?? 0) > 0 ? sigiss_money($inv['total_taxes_amount']) : ''],
-        'xnbs' => ['xsd:string', (string)($inv['nbs_code'] ?? '')],
+        'xnbs' => ['xsd:string', ''], // NBS description (optional); the code goes in dps_serv_cnbs
+        'dps_serv_cnbs' => ['xsd:string', only_digits((string)($inv['nbs_code'] ?? ''))],
     ];
 
     // Withholding flags (optional ints) must sit between "csll" and "valor_total_tributos" (WSDL sequence).

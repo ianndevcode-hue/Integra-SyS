@@ -13,11 +13,15 @@ declare(strict_types=1);
 require_once INC_PATH . '/nfse.php';
 require_once INC_PATH . '/fiscalhub_engine.php';
 require_once INC_PATH . '/fiscalhub_docs.php';
+require_once INC_PATH . '/fiscalhub_finance.php';
 
 const FH_NAME = 'Integra Fiscal Hub';
 const FH_TERMS_VERSION = '2026.09';
 const FH_MARKET_FACTOR = 0.90;
 const FH_MARKET_DATE = '2026-09-27';
+/** Free plan: 15 notes a month, no charge, renewed automatically (one per CPF/CNPJ). */
+const FH_FREE_PLAN = 'gratis';
+const FH_FREE_NOTES = 15;
 
 /**
  * Market references used to price each tier (monthly price in BRL). Marília: Actana ERP is
@@ -74,19 +78,26 @@ function fh_default_plans(): array
 {
     $refs = fh_market_refs();
     $avg = fn($k) => round(array_sum(array_column($refs[$k], 1)) / count($refs[$k]), 2);
-    $base = ['Emissão pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional', 'Cadastro ilimitado de clientes (tomadores) e serviços', 'Cálculo automático de ISS, retenções federais e valor líquido',
+    $base = ['Emissão pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional', 'Financeiro: contas a pagar e a receber, fluxo de caixa e DRE', 'Extrato bancário (OFX, Open Finance e APIs dos bancos) e conciliação', 'Cadastro ilimitado de clientes (tomadores) e serviços', 'Cálculo automático de ISS, retenções federais e valor líquido',
         'PDF e XML: download individual, múltiplo ou do período inteiro (ZIP)', 'Envio automático da nota por e-mail ao cliente', 'Cancelamento e substituição de notas'];
     $plans = [
-        ['essencial', 'Essencial', 'Para MEI, autônomos e profissionais liberais', 30, 1, ['ai_quota' => 3, 'recurring' => false, 'batch' => false, 'priority' => false],
+        ['essencial', 'Essencial', 'Para MEI, autônomos e profissionais liberais', 30, 1, ['ai_quota' => 3, 'recurring' => false, 'batch' => false, 'priority' => false, 'open_finance' => false],
             array_merge(['1 empresa (CNPJ ou CPF)', 'Até 30 notas por mês'], $base, ['Relatórios mensais + 3 análises com IA por mês', 'Suporte por chamado'])],
-        ['profissional', 'Profissional', 'Para prestadores de serviço em crescimento', 150, 1, ['ai_quota' => 20, 'recurring' => true, 'batch' => false, 'priority' => false],
+        ['profissional', 'Profissional', 'Para prestadores de serviço em crescimento', 150, 1, ['ai_quota' => 20, 'recurring' => true, 'batch' => false, 'priority' => false, 'open_finance' => true],
             array_merge(['1 empresa (CNPJ ou CPF)', 'Até 150 notas por mês'], $base, ['Notas recorrentes automáticas (mensalidades)', 'Relatórios com IA (20 análises/mês)', 'Painel de impostos e retenções', 'Suporte por chamado e WhatsApp'])],
-        ['business', 'Business', 'Para clínicas, escritórios e empresas com volume', 500, 3, ['ai_quota' => 60, 'recurring' => true, 'batch' => true, 'priority' => true],
+        ['business', 'Business', 'Para clínicas, escritórios e empresas com volume', 500, 3, ['ai_quota' => 60, 'recurring' => true, 'batch' => true, 'priority' => true, 'open_finance' => true],
             array_merge(['Até 3 empresas', 'Até 500 notas por mês'], $base, ['Emissão em lote por planilha (CSV)', 'Notas recorrentes automáticas', 'Relatórios avançados com IA (60 análises/mês)', 'Exportação contábil (CSV/Excel)', 'Suporte prioritário'])],
-        ['enterprise', 'Enterprise', 'Para contadores e grupos de empresas', 2000, 10, ['ai_quota' => 200, 'recurring' => true, 'batch' => true, 'priority' => true],
+        ['enterprise', 'Enterprise', 'Para contadores e grupos de empresas', 2000, 10, ['ai_quota' => 200, 'recurring' => true, 'batch' => true, 'priority' => true, 'open_finance' => true],
             array_merge(['Até 10 empresas', 'Até 2.000 notas por mês'], $base, ['Tudo do Business', 'Onboarding assistido (cadastro de clientes e serviços)', 'Relatórios com IA (200 análises/mês)', 'Atendimento com SLA de 4 horas'])],
     ];
-    $out = [];
+    $out = [[
+        'code' => FH_FREE_PLAN, 'name' => 'Grátis', 'tagline' => 'Para começar: ' . FH_FREE_NOTES . ' notas por mês sem pagar nada', 'price_monthly' => 0, 'price_yearly' => 0, 'market_avg' => null,
+        'notes_limit' => FH_FREE_NOTES, 'companies_limit' => 1, 'flags' => json_encode(['ai_quota' => 1, 'recurring' => false, 'batch' => false, 'priority' => false, 'open_finance' => false]),
+        'features' => json_encode(['1 empresa (CNPJ ou CPF)', 'Até ' . FH_FREE_NOTES . ' notas por mês, grátis para sempre', 'Emissão pela Prefeitura de Marília (SIGISS) e pelo Emissor Nacional',
+            'Financeiro: contas a pagar e a receber, fluxo de caixa e DRE', 'Extrato bancário (OFX, Open Finance e APIs dos bancos) e conciliação', 'Cálculo automático de ISS, retenções federais e valor líquido',
+            'PDF e XML: download individual, múltiplo ou do período inteiro (ZIP)', 'Envio automático da nota por e-mail ao cliente', '1 análise com IA por mês', 'Suporte pela central de ajuda'], JSON_UNESCAPED_UNICODE),
+        'highlight' => 0, 'active' => 1, 'position' => 0,
+    ]];
     foreach ($plans as $i => [$code, $name, $tagline, $notes, $companies, $flags, $features]) {
         $a = $avg($code);
         $price = fh_price_from_avg($a);
@@ -99,14 +110,25 @@ function fh_default_plans(): array
 
 function fh_plans_seed(): void
 {
-    if ((int)db_value('SELECT COUNT(*) FROM fh_plans') > 0) return;
-    foreach (fh_default_plans() as $p) db_insert('fh_plans', $p + ['created_at' => now(), 'updated_at' => now()]);
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    if ((int)db_value('SELECT COUNT(*) FROM fh_plans') === 0) {
+        foreach (fh_default_plans() as $p) db_insert('fh_plans', $p + ['created_at' => now(), 'updated_at' => now()]);
+        set_setting('fh_free_plan_seeded', '1');
+        return;
+    }
+    // installs created before the free plan existed get it once (the team may deactivate it later)
+    if (setting('fh_free_plan_seeded') !== '1') {
+        if (!db_value('SELECT id FROM fh_plans WHERE code = ?', [FH_FREE_PLAN])) db_insert('fh_plans', fh_default_plans()[0] + ['created_at' => now(), 'updated_at' => now()]);
+        set_setting('fh_free_plan_seeded', '1');
+    }
 }
 
 function fh_plan_row(array $p): array
 {
     $p['features'] = json_decode((string)$p['features'], true) ?: [];
-    $p['flags'] = (json_decode((string)$p['flags'], true) ?: []) + ['ai_quota' => 0, 'recurring' => false, 'batch' => false, 'priority' => false];
+    $p['flags'] = (json_decode((string)$p['flags'], true) ?: []) + ['ai_quota' => 0, 'recurring' => false, 'batch' => false, 'priority' => false, 'open_finance' => false];
     foreach (['price_monthly', 'price_yearly', 'market_avg'] as $k) $p[$k] = (float)$p[$k];
     foreach (['notes_limit', 'companies_limit', 'highlight', 'active', 'position', 'id'] as $k) $p[$k] = (int)$p[$k];
     return $p;
@@ -123,6 +145,13 @@ function fh_plan(string $code): ?array
     fh_plans_seed();
     $p = db_one('SELECT * FROM fh_plans WHERE code = ?', [$code]);
     return $p ? fh_plan_row($p) : null;
+}
+
+/** Subscription (price) or plan (price_monthly) with nothing to charge. */
+function fh_is_free(?array $x): bool
+{
+    if (!$x) return false;
+    return array_key_exists('price', $x) ? (float)$x['price'] <= 0 : (float)($x['price_monthly'] ?? 1) <= 0;
 }
 
 /* ============================================================ SUBSCRIPTIONS */
@@ -183,6 +212,8 @@ function fh_access(int $customerId): array
     } elseif ($sub['status'] === 'suspended') {
         $out['state'] = 'suspended';
         $out['message'] = 'Assinatura suspensa. Fale com a Integra Code para reativar. Suas notas continuam disponíveis para consulta e download.';
+    } elseif ((float)$sub['price'] <= 0 && in_array($sub['status'], ['active', 'past_due'], true)) {
+        $out['state'] = 'active'; // free plan (or 100% discount): no payment to wait for
     } elseif ($paidUntil && $today <= $paidUntil) {
         $out['state'] = $sub['status'] === 'canceled' ? 'canceled_active' : 'active';
     } elseif ($graceEnd && $today <= $graceEnd && $sub['status'] !== 'canceled') {
@@ -217,7 +248,7 @@ function fh_require_flag(int $customerId, string $flag): void
 {
     $a = fh_access($customerId);
     if (empty($a['plan']['flags'][$flag])) {
-        $names = ['recurring' => 'Notas recorrentes', 'batch' => 'Emissão em lote'];
+        $names = ['recurring' => 'Notas recorrentes', 'batch' => 'Emissão em lote', 'open_finance' => 'A conexão bancária por Open Finance'];
         throw new AppException(($names[$flag] ?? 'Este recurso') . ' não está incluído no seu plano. Faça upgrade para liberar.');
     }
 }
@@ -265,13 +296,17 @@ function fh_checkout(array $in, ?array $loggedCustomer): array
     if (setting('fh_sales_enabled', '1') !== '1') throw new AppException('As contratações online estão temporariamente pausadas. Fale com a nossa equipe.');
     $plan = fh_plan((string)($in['plan'] ?? ''));
     if (!$plan || !$plan['active']) throw new AppException('Escolha um plano válido.');
-    $cycle = ($in['cycle'] ?? 'monthly') === 'yearly' ? 'yearly' : 'monthly';
+    $free = fh_is_free($plan);
+    $cycle = $free ? 'monthly' : (($in['cycle'] ?? 'monthly') === 'yearly' ? 'yearly' : 'monthly');
     $billing = in_array($in['billing_type'] ?? '', BILLING_TYPES, true) ? $in['billing_type'] : 'UNDEFINED';
     if (empty($in['terms'])) throw new AppException('Para contratar, leia e aceite os Termos de Uso do ' . FH_NAME . '.');
     $signName = trim((string)($in['terms_name'] ?? ''));
     if (mb_strlen($signName) < 5) throw new AppException('Digite seu nome completo para assinar o aceite dos termos.');
     $doc = only_digits((string)($in['document'] ?? ''));
-    if (!fh_valid_doc($doc)) throw new AppException('Informe um CPF ou CNPJ válido para a cobrança.');
+    if (!fh_valid_doc($doc)) throw new AppException($free ? 'Informe um CPF ou CNPJ válido.' : 'Informe um CPF ou CNPJ válido para a cobrança.');
+    if ($free && db_value("SELECT s.id FROM fh_subscriptions s JOIN customers c ON c.id = s.customer_id WHERE s.price <= 0 AND s.status IN ('active', 'past_due') AND c.document = ?" . ($loggedCustomer ? ' AND c.id != ?' : ''), $loggedCustomer ? [$doc, (int)$loggedCustomer['id']] : [$doc])) {
+        throw new AppException('Este CPF/CNPJ já tem um plano grátis ativo em outra conta. Entre com essa conta ou escolha um plano pago.');
+    }
     $phone = mb_substr(trim((string)($in['phone'] ?? '')), 0, 30);
 
     if ($loggedCustomer) {
@@ -310,13 +345,17 @@ function fh_checkout(array $in, ?array $loggedCustomer): array
     $subId = db_insert('fh_subscriptions', [
         'customer_id' => $customer['id'], 'plan_code' => $plan['code'], 'cycle' => $cycle, 'price' => $price, 'status' => 'pending', 'billing_type' => $billing,
         'terms_version' => FH_TERMS_VERSION, 'terms_accepted_at' => now(), 'terms_ip' => client_ip(), 'terms_name' => mb_substr($signName, 0, 160),
-        'next_charge_date' => today(), 'created_at' => now(), 'updated_at' => now(),
+        'next_charge_date' => $free ? null : today(), 'created_at' => now(), 'updated_at' => now(),
     ]);
-    fh_event($subId, 'created', "Contratação online: plano {$plan['name']} (" . fh_period_label($cycle) . ') — ' . money($price) . '. Termos v' . FH_TERMS_VERSION . " aceitos por $signName (IP " . client_ip() . ').', ['amount' => $price, 'user' => $signName]);
+    fh_event($subId, 'created', "Contratação online: plano {$plan['name']} (" . ($free ? 'grátis)' : fh_period_label($cycle) . ') — ' . money($price)) . '. Termos v' . FH_TERMS_VERSION . " aceitos por $signName (IP " . client_ip() . ').', ['amount' => $price, 'user' => $signName]);
     db_update('customers', (int)$customer['id'], ['tags' => trim(implode(',', array_unique(array_filter(array_merge(explode(',', (string)($customer['tags'] ?? '')), ['fiscal-hub'])))), ','), 'updated_at' => now()]);
     $sub = db_find('fh_subscriptions', $subId);
     $payUrl = null;
     $error = null;
+    if ($free) {
+        fh_extend($sub, 1, 'free', 'Plano Grátis ativado (' . FH_FREE_NOTES . ' notas por mês, sem cobrança).', ['user' => $signName]);
+        return ['subscription' => db_find('fh_subscriptions', $subId), 'pay_url' => null, 'error' => null, 'free' => true];
+    }
     try {
         $charge = fh_create_charge($sub, today());
         $payUrl = $charge['invoice_url'] ?? null;
@@ -333,6 +372,7 @@ function fh_checkout(array $in, ?array $loggedCustomer): array
 /** Asaas charge for the next period of a subscription (links charge + receivable entry). */
 function fh_create_charge(array $sub, string $dueDate): array
 {
+    if (fh_is_free($sub)) throw new AppException('O plano grátis não tem cobrança.');
     $plan = fh_plan($sub['plan_code']);
     $months = $sub['cycle'] === 'yearly' ? 12 : 1;
     $start = $sub['paid_until'] && $sub['paid_until'] >= today() ? date('Y-m-d', strtotime($sub['paid_until'] . ' +1 day')) : today();
@@ -374,7 +414,7 @@ function fh_extend(array $sub, int $months, string $kind, string $description, a
     $until = date('Y-m-d', strtotime($from . " +$months months"));
     $firstActivation = !$sub['started_at'];
     $status = in_array($sub['status'], ['canceled'], true) && $kind !== 'payment' ? 'canceled' : 'active';
-    db_update('fh_subscriptions', (int)$sub['id'], ['status' => $status, 'paid_until' => $until, 'next_charge_date' => date('Y-m-d', strtotime($until . ' +1 day')),
+    db_update('fh_subscriptions', (int)$sub['id'], ['status' => $status, 'paid_until' => $until, 'next_charge_date' => fh_is_free($sub) ? null : date('Y-m-d', strtotime($until . ' +1 day')),
         'started_at' => $sub['started_at'] ?: now(), 'updated_at' => now()]);
     fh_event((int)$sub['id'], $kind, $description . ' Acesso liberado até ' . date('d/m/Y', strtotime($until)) . '.', $extra + ['months' => $months]);
     $customer = db_find('customers', (int)$sub['customer_id']);
@@ -397,7 +437,11 @@ function fh_billing_run(): array
     $lead = max(0, min(30, (int)setting('fh_lead_days', '7')));
     $out = ['charges' => 0, 'past_due' => 0, 'errors' => []];
     $limitDate = date('Y-m-d', strtotime("+$lead days"));
-    foreach (db_all("SELECT * FROM fh_subscriptions WHERE status IN ('active','past_due') AND next_charge_date IS NOT NULL AND next_charge_date <= ?", [$limitDate]) as $sub) {
+    foreach (db_all("SELECT * FROM fh_subscriptions WHERE status IN ('active','past_due') AND price <= 0 AND (paid_until IS NULL OR paid_until < ?)", [$limitDate]) as $sub) {
+        fh_extend($sub, 1, 'free_renewal', 'Plano grátis renovado automaticamente.', ['user' => 'sistema']);
+        $out['free_renewed'] = ($out['free_renewed'] ?? 0) + 1;
+    }
+    foreach (db_all("SELECT * FROM fh_subscriptions WHERE status IN ('active','past_due') AND price > 0 AND next_charge_date IS NOT NULL AND next_charge_date <= ?", [$limitDate]) as $sub) {
         if (fh_open_charge((int)$sub['id'])) continue;
         if (db_value('SELECT COUNT(*) FROM charges WHERE fh_subscription_id = ? AND due_date >= ?', [$sub['id'], $sub['next_charge_date']])) continue;
         try {
@@ -408,7 +452,7 @@ function fh_billing_run(): array
         }
     }
     $graceLimit = date('Y-m-d', strtotime('-' . fh_grace_days() . ' days'));
-    foreach (db_all("SELECT * FROM fh_subscriptions WHERE status = 'active' AND paid_until IS NOT NULL AND paid_until < ?", [$graceLimit]) as $sub) {
+    foreach (db_all("SELECT * FROM fh_subscriptions WHERE status = 'active' AND price > 0 AND paid_until IS NOT NULL AND paid_until < ?", [$graceLimit]) as $sub) {
         db_update('fh_subscriptions', (int)$sub['id'], ['status' => 'past_due', 'updated_at' => now()]);
         fh_event((int)$sub['id'], 'status', 'Assinatura em atraso: a emissão foi bloqueada até a regularização.', ['user' => 'sistema']);
         $out['past_due']++;
@@ -457,7 +501,8 @@ function fh_admin_create(array $in): array
     db_update('customers', (int)$customer['id'], ['portal_enabled' => 1, 'updated_at' => now()]);
     $sub = db_find('fh_subscriptions', $id);
     $free = (int)($in['free_months'] ?? 0);
-    if ($free > 0) $sub = fh_admin_free_months($id, $free, (string)($in['reason'] ?? 'cortesia na ativação'), false);
+    if (fh_is_free($sub)) $sub = fh_extend($sub, 1, 'free', 'Plano sem cobrança ativado pela equipe.');
+    elseif ($free > 0) $sub = fh_admin_free_months($id, $free, (string)($in['reason'] ?? 'cortesia na ativação'), false);
     elseif (!empty($in['charge_now'])) fh_create_charge($sub, today());
     return $sub;
 }
@@ -505,12 +550,35 @@ function fh_customer_change_plan(int $customerId, string $code, string $cycle): 
     $price = $cycle === 'yearly' ? $plan['price_yearly'] : $plan['price_monthly'];
     $companies = (int)db_value('SELECT COUNT(*) FROM fh_emitters WHERE customer_id = ? AND active = 1', [$customerId]);
     if ($companies > $plan['companies_limit']) throw new AppException("O plano {$plan['name']} permite {$plan['companies_limit']} empresa(s) e você tem $companies cadastrada(s). Desative empresas antes de mudar.");
+    if (fh_is_free($plan) && !fh_is_free($sub) && db_value("SELECT s.id FROM fh_subscriptions s JOIN customers c ON c.id = s.customer_id JOIN customers me ON me.id = ? WHERE s.price <= 0 AND s.status IN ('active', 'past_due') AND c.document = me.document AND c.id != me.id", [$customerId])) {
+        throw new AppException('Este CPF/CNPJ já tem um plano grátis ativo em outra conta.');
+    }
+    if (fh_is_free($sub) && !fh_is_free($plan) && $sub['status'] !== 'pending') {
+        // upgrade from the free plan: bill right away; access continues meanwhile
+        db_update('fh_subscriptions', (int)$sub['id'], ['plan_code' => $plan['code'], 'cycle' => $cycle, 'price' => $price, 'paid_until' => today(), 'next_charge_date' => today(), 'updated_at' => now()]);
+        fh_event((int)$sub['id'], 'change', "Cliente passou do plano grátis para o {$plan['name']} (" . fh_period_label($cycle) . ') — ' . money($price) . '.');
+        try {
+            $charge = fh_create_charge(db_find('fh_subscriptions', (int)$sub['id']), today());
+        } catch (Throwable $e) {
+            log_line('fiscalhub', 'upgrade charge failed', ['sub' => $sub['id'], 'error' => $e->getMessage()]);
+            return ['subscription' => db_find('fh_subscriptions', (int)$sub['id']), 'pay_url' => null, 'immediate' => true, 'error' => 'Plano alterado, mas não conseguimos gerar a fatura agora (' . $e->getMessage() . '). Use "Gerar pagamento" em instantes.'];
+        }
+        if (function_exists('mail_team')) mail_team('⬆️ Upgrade do plano grátis no ' . FH_NAME, mail_template('Upgrade de plano', mail_details(['Cliente' => (string)db_value('SELECT name FROM customers WHERE id = ?', [$customerId]), 'Novo plano' => $plan['name'] . ' (' . fh_period_label($cycle) . ')', 'Valor' => money($price)]), ['label' => 'Abrir', 'url' => app_link('/admin/#/fiscal-hub/subscriptions/' . $sub['id'])]), ['event' => 'fh_plan_team']);
+        return ['subscription' => db_find('fh_subscriptions', (int)$sub['id']), 'pay_url' => $charge['invoice_url'] ?? null, 'immediate' => true];
+    }
     if ($sub['status'] === 'pending') {
         if ($open = fh_open_charge((int)$sub['id'])) { try { cancel_charge($open); } catch (Throwable $e) { /* keep going */ } }
         db_update('fh_subscriptions', (int)$sub['id'], ['plan_code' => $plan['code'], 'cycle' => $cycle, 'price' => $price, 'updated_at' => now()]);
         fh_event((int)$sub['id'], 'change', "Cliente trocou para o plano {$plan['name']} (" . fh_period_label($cycle) . ') antes do pagamento.');
         $charge = fh_create_charge(db_find('fh_subscriptions', (int)$sub['id']), today());
         return ['subscription' => db_find('fh_subscriptions', (int)$sub['id']), 'pay_url' => $charge['invoice_url'] ?? null, 'immediate' => true];
+    }
+    if (fh_is_free($plan)) {
+        // downgrade to the free plan: no more renewals to charge
+        if ($open = fh_open_charge((int)$sub['id'])) { try { cancel_charge($open); } catch (Throwable $e) { /* keep going */ } }
+        db_update('fh_subscriptions', (int)$sub['id'], ['plan_code' => $plan['code'], 'cycle' => 'monthly', 'price' => 0, 'next_charge_date' => null, 'status' => 'active', 'updated_at' => now()]);
+        fh_event((int)$sub['id'], 'change', 'Cliente mudou para o plano Grátis (' . FH_FREE_NOTES . ' notas por mês, sem cobrança).');
+        return ['subscription' => db_find('fh_subscriptions', (int)$sub['id']), 'pay_url' => null, 'immediate' => true];
     }
     db_update('fh_subscriptions', (int)$sub['id'], ['plan_code' => $plan['code'], 'cycle' => $cycle, 'price' => $price, 'updated_at' => now()]);
     $up = $price > (float)$sub['price'];

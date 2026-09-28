@@ -754,6 +754,11 @@ function schema_statements(string $driver): array
             updated_at DATETIME NOT NULL",
     ];
 
+    // v9: Integra Fiscal Hub financial module (payables/receivables, cash flow, statements, reconciliation)
+    require_once __DIR__ . '/schema_fh_fin.php';
+    $fin = fh_schema_fin($pk, $fk, $text);
+    $tables += $fin['tables'];
+
     $statements = [];
     foreach ($tables as $name => $cols) {
         $statements[] = "CREATE TABLE IF NOT EXISTS $name ($cols)$suffix";
@@ -796,7 +801,7 @@ function schema_statements(string $driver): array
         'idx_fh_inv_customer' => 'fh_invoices (customer_id, created_at)',
         'idx_fh_inv_dps' => 'fh_invoices (emitter_id, environment, dps_serie, dps_number)',
         'idx_fh_recurring_next' => 'fh_recurring (active, next_run)',
-    ];
+    ] + $fin['indexes'];
     foreach ($indexes as $name => $def) {
         $statements[] = $driver === 'sqlite'
             ? "CREATE INDEX IF NOT EXISTS $name ON $def"
@@ -806,7 +811,7 @@ function schema_statements(string $driver): array
 }
 
 /** Bump when tables/indexes are added; api/index.php migrates automatically. */
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 /** Columns added after the first release: [table, column, definition]. */
 function schema_added_columns(string $driver): array
@@ -885,6 +890,38 @@ function schema_added_columns(string $driver): array
     ];
 }
 
+/** One-time data updates, each guarded by its own settings flag (safe to run on every migration). */
+function schema_data_fixes(): array
+{
+    $log = [];
+    // v9: the "open_finance" plan flag (bank sync through Open Finance) for the paid Fiscal Hub tiers
+    if (setting('fh_v9_plan_flags') !== '1') {
+        foreach (db_all("SELECT id, code, flags FROM fh_plans WHERE code IN ('profissional', 'business', 'enterprise')") as $p) {
+            $flags = json_decode((string)$p['flags'], true) ?: [];
+            if (!array_key_exists('open_finance', $flags)) {
+                $flags['open_finance'] = true;
+                db_exec('UPDATE fh_plans SET flags = ? WHERE id = ?', [json_encode($flags), $p['id']]);
+                $log[] = 'fh_plans open_finance ' . $p['code'];
+            }
+        }
+        set_setting('fh_v9_plan_flags', '1');
+    }
+    // v9: the financial module is part of every Fiscal Hub plan
+    if (setting('fh_v9_plan_features') !== '1') {
+        foreach (db_all('SELECT id, code, features FROM fh_plans') as $p) {
+            $features = json_decode((string)$p['features'], true) ?: [];
+            if (!array_filter($features, fn($f) => stripos((string)$f, 'contas a pagar') !== false)) {
+                $at = min(2, count($features));
+                array_splice($features, $at, 0, ['Financeiro: contas a pagar e a receber, fluxo de caixa e DRE', 'Extrato bancário (OFX, Open Finance e APIs dos bancos) e conciliação']);
+                db_exec('UPDATE fh_plans SET features = ? WHERE id = ?', [json_encode($features, JSON_UNESCAPED_UNICODE), $p['id']]);
+                $log[] = 'fh_plans features ' . $p['code'];
+            }
+        }
+        set_setting('fh_v9_plan_features', '1');
+    }
+    return $log;
+}
+
 function column_exists(string $table, string $column): bool
 {
     if (db_driver() === 'sqlite') {
@@ -916,5 +953,5 @@ function run_migrations(): array
             }
         }
     }
-    return $log;
+    return array_merge($log, schema_data_fixes());
 }

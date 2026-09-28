@@ -36,7 +36,7 @@ if (setting('fh_cron_last', '') !== date('Y-m-d H') && (int)date('G') >= 6) {
         require_once INC_PATH . '/finance.php';
         require_once INC_PATH . '/ai.php';
         require_once INC_PATH . '/fiscalhub.php';
-        $fiscal = ['billing' => fh_billing_run(), 'recurring' => fh_recurring_run()];
+        $fiscal = ['billing' => fh_billing_run(), 'recurring' => fh_recurring_run(), 'finance' => fhf_cron()];
     } catch (Throwable $e) {
         log_line('fiscalhub', 'cron failed', ['error' => $e->getMessage()]);
         $fiscal = ['error' => $e->getMessage()];
