@@ -495,6 +495,12 @@ function fh_invoice_save(array $em, array $in, ?array $existing = null, string $
         if (!preg_match('/^[A-Z]{2}$/', (string)$country)) throw new AppException('Na exportação, informe o país onde o resultado do serviço se verifica.');
         $extra['pais_resultado'] = $country;
     }
+    if ($existing) {
+        // keys the system writes (never sent by the form) survive "Corrigir e emitir": the RPS consumed by a note
+        // refused by the ADN and the link of a substitute note
+        $old = json_decode((string)$existing['extra'], true) ?: [];
+        foreach (['sigiss_adn', 'subst'] as $k) if (isset($old[$k]) && !isset($extra[$k])) $extra[$k] = $old[$k];
+    }
     if ($situation === 'es' && empty($extra['exig'])) throw new AppException('Informe o tipo e o número do processo da exigibilidade suspensa.');
     if ($situation === 'is' && $em['provider'] === 'nacional' && empty($extra['bm'])) throw new AppException('No Emissor Nacional, a isenção é informada pelo número do benefício municipal (14 dígitos).');
     $desc = $raw . ((int)$em['show_taxes'] && empty($in['skip_tax_note']) ? nfse_taxes_note($tax) : '');
@@ -960,8 +966,39 @@ function fh_transmit(int $id, ?int $customerId = null): array
             }
         }
         $recovered = null;
+        // "RPS número X já foi vinculado a NF-e Y": that note decides — refused by the ADN: new RPS and resend once;
+        // waiting for the ADN: wait (never re-send); valid: it is this invoice's note, recover it
+        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)
+            && preg_match('/RPS n[uú]mero\s*(\d+)\s*j[aá] foi vinculad[oa] (?:a|à) NF-?e\s*(\d+)/iu', implode(' ', sigiss_errors($xp)), $mm) && (int)$mm[1] === (int)$inv['dps_number']) {
+            $linked = $mm[2];
+            try {
+                $cfgL = fh_sigiss_cfg($em);
+                $qL = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfgL['ccm']], 'cnpj' => ['xsd:string', $cfgL['cnpj']], 'senha' => ['xsd:string', $cfgL['password']]]],
+                    'Nota' => ['type' => 'xsd:int', 'value' => (int)$linked]], $cfgL['url']);
+                $st = fh_sigiss_adn_state($qL);
+                log_line('fiscalhub', 'sigiss rps already linked', ['id' => $id, 'rps' => $inv['dps_number'], 'nota' => $linked, 'adn' => $st]);
+                if ($st && $st['state'] === 'pending') {
+                    fh_sigiss_mark_pending($id, $linked, $st['msg']);
+                    throw new NfseException('A Prefeitura já gerou a nota nº ' . $linked . ' para este RPS e ela aguarda a aprovação do Ambiente de Dados Nacional (ADN).', ['Não emita de novo: acompanhe em Notas fiscais ("Atualizar situação").']);
+                }
+                if ($st) {
+                    fh_sigiss_mark_adn($id, $linked, $st['msg']);
+                    $inv = fh_sigiss_renumber_if_used(db_find('fh_invoices', $id), $em);
+                    $fields = fh_sigiss_fields($inv, $em);
+                    $xp = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
+                    $number = sigiss_value($xp, 'Nota');
+                    log_line('fiscalhub', 'sigiss resend with new rps', ['id' => $id, 'rps' => $inv['dps_number'], 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => sigiss_errors($xp)]);
+                } elseif (sigiss_value($qL, 'nota') !== '' || sigiss_value($qL, 'num_rps') !== '') {
+                    $recovered = ['link' => sigiss_value($qL, 'LinkImpressao'), 'autenticidade' => sigiss_value($qL, 'autenticidade')];
+                    $number = $linked;
+                }
+            } catch (NfseException $e) {
+                if (str_contains($e->getMessage(), 'aguarda')) throw $e;
+                log_line('fiscalhub', 'sigiss linked rps check failed', ['id' => $id, 'error' => $e->getMessage()]);
+            }
+        }
         // "Id_sis_legado já foi utilizado" (a number used before by another system): the field is optional, resend once without it
-        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/id_sis_legado/iu', sigiss_errors($xp))) {
+        if (!$recovered && !(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/id_sis_legado/iu', sigiss_errors($xp))) {
             try {
                 unset($fields['id_sis_legado']);
                 $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
@@ -972,7 +1009,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
             }
         }
         // the SIGISS may still demand the Simples rate: a validation refusal creates no note, so resend once with it
-        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && ($fields['aliquota_simples'][1] ?? '') === '' && (float)$inv['iss_rate'] > 0 && $em['op_simp_nac'] !== '1'
+        if (!$recovered && !(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && ($fields['aliquota_simples'][1] ?? '') === '' && (float)$inv['iss_rate'] > 0 && $em['op_simp_nac'] !== '1'
             && preg_grep('/al[ií]quota/iu', sigiss_errors($xp))) {
             try {
                 $fields['aliquota_simples'] = ['xsd:string', sigiss_money($inv['iss_rate'])];
@@ -984,7 +1021,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
                 log_line('fiscalhub', 'sigiss aliquota resend failed', ['id' => $id, 'error' => $e->getMessage()]);
             }
         }
-        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)) {
+        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && !$recovered) {
             $errors = sigiss_errors($xp);
             $sent = array_map(fn($f) => $f[1], array_diff_key($fields, ['senha' => 1]));
             log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'sent' => array_filter($sent, fn($v) => $v !== '' && $v !== null), 'response' => sigiss_last_response()]);
