@@ -902,6 +902,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
         if (!$key || $res['status'] >= 500) {
             $errors = nfse_errors($json) ?: ['HTTP ' . $res['status'] . ': ' . mb_substr(strip_tags((string)$res['body']), 0, 300)];
             if (in_array($res['status'], [401, 403], true)) array_unshift($errors, 'Acesso negado: confira se o certificado é do próprio emissor e se o município permite o Emissor Nacional.');
+            if (!empty($inv['ctribmun']) && preg_grep('/E0314/', $errors)) $errors[] = 'Como resolver: apague o "Código municipal (cTribMun)" ' . $inv['ctribmun'] . ' na emissão e no cadastro do serviço. Ele é opcional e o seu município não usa esse código no Emissor Nacional (não confunda com o código de serviço do SIGISS).';
             $fail('A nota foi rejeitada pelo Emissor Nacional.', $errors);
         }
         $number = $nfseXml && preg_match('/<nNFSe>(\d+)<\/nNFSe>/', $nfseXml, $mm) ? $mm[1] : null;

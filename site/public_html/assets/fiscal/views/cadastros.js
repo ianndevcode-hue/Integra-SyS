@@ -135,7 +135,7 @@ function serviceForm(em, s, lc, onDone) {
       { name: 'name', label: 'Nome do serviço', required: true, span: 2, placeholder: 'Ex.: Consulta médica, Desenvolvimento de sistema, Manutenção mensal' },
       { name: 'lc116', label: 'Item da LC 116 (digite código ou palavra)', required: true, span: 2 },
       nac ? { name: 'ctribnac', label: 'Código de tributação nacional (6 dígitos)', help: 'Preenchido pelo item; confira o desdobro com seu contador.' } : { name: 'sigiss_code', label: 'Código do serviço no SIGISS', help: 'Ex.: 1701 para o item 17.01 (como no seu cadastro da prefeitura).' },
-      { name: 'ctribmun', label: 'Código de tributação municipal (opcional)' },
+      { name: 'ctribmun', label: 'Código de tributação municipal (cTribMun)', help: 'Deixe em branco, a menos que a prefeitura tenha informado um código próprio no Emissor Nacional. Não é o código do SIGISS.' },
       { name: 'cnbs', label: 'Código NBS (opcional, 9 dígitos)' },
       { name: 'iss_rate', label: 'Alíquota do ISS (%)', type: 'number', step: '0.01', min: 0, max: 5, placeholder: 'padrão da empresa' },
       { name: 'sigiss_situacao', label: 'Situação padrão do ISS', type: 'select', empty: false, span: 2, options: SITUATIONS.filter(([k]) => nac || !['ti', 'es'].includes(k)).map(([value, label]) => ({ value, label })) },
