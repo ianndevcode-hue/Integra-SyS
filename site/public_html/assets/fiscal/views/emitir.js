@@ -67,6 +67,7 @@ export async function render(el, ctx) {
           <div class="field"><label>Código municipal ${nac ? '(cTribMun)' : ''}</label><input name="ctribmun" value="${esc(val('ctribmun'))}" maxlength="3" inputmode="numeric" placeholder="deixe em branco"><span class="help">Só se a prefeitura informou um código próprio no Emissor Nacional (Marília não usa). Não é o código do SIGISS.</span></div>
           <div class="field"><label>Código NBS</label><input name="cnbs" list="fh-nbs" value="${esc(val('cnbs'))}" maxlength="9" inputmode="numeric" placeholder="opcional, 9 dígitos"><datalist id="fh-nbs"></datalist><span class="help" data-nbs-help>Escolha o item da LC 116 para ver os códigos NBS oficiais do serviço.</span></div>
           <div class="field"><label>Competência</label><input type="date" name="competence_date" value="${esc(val('competence_date', today()))}" max="${today()}"></div>
+          <div class="field"><label>Data de vencimento</label><input type="date" name="x_vencimento" value="${esc(x.vencimento || '')}"><span class="help">opcional · sai no PDF e no contas a receber</span></div>
           <div class="field span-2" style="grid-column:1/-1"><label>Discriminação do serviço *</label><textarea name="description" rows="4" placeholder="Descreva o serviço prestado, período, contrato, etc.">${esc(x.desc_raw || '')}</textarea><span class="help">A linha de tributos aproximados (Lei 12.741) é adicionada automaticamente.</span></div>
         </div></section>
 
@@ -301,6 +302,7 @@ export async function render(el, ctx) {
     if (v('x_codigo_interno')) ex.codigo_interno = v('x_codigo_interno');
     if (F.x_v_receb && v('x_v_receb')) ex.v_receb = v('x_v_receb');
     if (F.x_retro?.checked) ex.retro = true;
+    if (v('x_vencimento')) ex.vencimento = v('x_vencimento');
     d.extra = ex;
     return d;
   };

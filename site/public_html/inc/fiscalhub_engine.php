@@ -418,6 +418,7 @@ function fh_extra_clean(array $x): array
             'descricao' => $s($x['subst']['descricao'] ?? '', 255), 'invoice_id' => (int)($x['subst']['invoice_id'] ?? 0)];
     }
     if (!empty($x['retro'])) $out['retro'] = true;
+    if (!empty($x['vencimento']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$x['vencimento'])) $out['vencimento'] = (string)$x['vencimento'];
     if (!empty($x['v_receb']) && (float)$x['v_receb'] > 0) $out['v_receb'] = round((float)$x['v_receb'], 2);
     if (!empty($x['codigo_interno']) && ($ci = substr(preg_replace('/[^A-Za-z0-9]/', '', strip_accents((string)$x['codigo_interno'])), 0, 20)) !== '') $out['codigo_interno'] = $ci;
     if (!empty($x['desc_raw'])) $out['desc_raw'] = mb_substr((string)$x['desc_raw'], 0, 2000);

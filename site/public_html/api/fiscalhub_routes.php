@@ -336,9 +336,48 @@ route('POST', '/fh/batch/transmit', function () {
 });
 
 // recurring
+function fh_recurring_owned(int $cid, $id): array
+{
+    $r = db_one('SELECT r.* FROM fh_recurring r JOIN fh_emitters e ON e.id = r.emitter_id WHERE r.id = ? AND e.customer_id = ?', [(int)$id, $cid]);
+    if (!$r) json_error('Recorrência não encontrada.', 404);
+    return $r;
+}
+/** Next $n emission dates of a recurrence (respecting the end date). */
+function fh_recurring_schedule(string $next, int $day, int $interval, ?string $end, int $n = 4): array
+{
+    $out = [];
+    for ($d = $next; count($out) < $n && (!$end || $d <= $end); $d = fh_recurring_next($d, $day, $interval)) $out[] = $d;
+    return $out;
+}
 route('GET', '/fh/recurring', function () {
     [$cid] = fh_guard();
-    json_out(['data' => db_all('SELECT r.*, t.name AS taker_name, s.name AS service_name, e.legal_name AS emitter_name FROM fh_recurring r JOIN fh_emitters e ON e.id = r.emitter_id LEFT JOIN fh_takers t ON t.id = r.taker_id LEFT JOIN fh_services s ON s.id = r.service_id WHERE e.customer_id = ? ORDER BY r.active DESC, r.next_run', [$cid])]);
+    $rows = db_all('SELECT r.*, t.name AS taker_name, t.email AS taker_email, t.document AS taker_document, s.name AS service_name, e.legal_name AS emitter_name, e.trade_name AS emitter_trade,
+            (SELECT COUNT(*) FROM fh_invoices i WHERE i.recurring_id = r.id AND i.status = \'authorized\') AS emitted_count,
+            (SELECT COALESCE(SUM(i.amount), 0) FROM fh_invoices i WHERE i.recurring_id = r.id AND i.status = \'authorized\') AS emitted_total,
+            (SELECT MAX(i.id) FROM fh_invoices i WHERE i.recurring_id = r.id) AS last_invoice_id
+        FROM fh_recurring r JOIN fh_emitters e ON e.id = r.emitter_id LEFT JOIN fh_takers t ON t.id = r.taker_id LEFT JOIN fh_services s ON s.id = r.service_id
+        WHERE e.customer_id = ? ORDER BY r.active DESC, r.next_run', [$cid]);
+    foreach ($rows as &$r) {
+        $r['interval_months'] = (int)($r['interval_months'] ?? 1) ?: 1;
+        $r['last_invoice'] = $r['last_invoice_id'] ? db_one('SELECT id, status, nfse_number, amount, issued_at, created_at, error_message FROM fh_invoices WHERE id = ?', [(int)$r['last_invoice_id']]) : null;
+        $r['schedule'] = (int)($r['active'] ?? 0) ? fh_recurring_schedule($r['next_run'], (int)$r['day_of_month'], $r['interval_months'], $r['end_date']) : [];
+        $r['next_due'] = fh_recurring_due(max((string)$r['next_run'], today()), $r['due_day'] ?? null);
+        $r['preview'] = fh_recurring_text((string)$r['description'], (string)$r['next_run'], $r['next_due']);
+    }
+    unset($r);
+    json_out(['data' => $rows, 'intervals' => FH_RECURRING_INTERVALS]);
+});
+route('POST', '/fh/recurring/preview', function () {
+    fh_guard();
+    $in = input();
+    $day = max(1, min(28, (int)($in['day_of_month'] ?? 1)));
+    $interval = isset(FH_RECURRING_INTERVALS[(int)($in['interval_months'] ?? 1)]) ? (int)$in['interval_months'] : 1;
+    $next = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['next_run'] ?? '')) ? $in['next_run'] : (date('j') <= $day ? date('Y-m-') . sprintf('%02d', $day) : fh_recurring_next(today(), $day, 1));
+    $end = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['end_date'] ?? '')) ? $in['end_date'] : null;
+    $sched = fh_recurring_schedule($next, $day, $interval, $end, 6);
+    $dueDay = (int)($in['due_day'] ?? 0);
+    $dues = array_map(fn($d) => fh_recurring_due(max($d, today()), $dueDay), $sched);
+    json_out(['schedule' => $sched, 'dues' => $dues, 'text' => fh_recurring_text((string)($in['description'] ?? ''), $sched[0] ?? $next, $dues[0] ?? null)]);
 });
 $fhRecurringSave = function (int $cid, array $in, ?array $existing) {
     fh_require_flag($cid, 'recurring');
@@ -349,10 +388,14 @@ $fhRecurringSave = function (int $cid, array $in, ?array $existing) {
     $amount = round((float)str_replace(',', '.', (string)($in['amount'] ?? 0)), 2);
     if ($amount <= 0) throw new AppException('Informe o valor.');
     $day = max(1, min(28, (int)($in['day_of_month'] ?? 1)));
-    $next = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['next_run'] ?? '')) ? $in['next_run'] : (date('j') <= $day ? date('Y-m-') . sprintf('%02d', $day) : fh_recurring_next(today(), $day));
+    $interval = isset(FH_RECURRING_INTERVALS[(int)($in['interval_months'] ?? 1)]) ? (int)$in['interval_months'] : 1;
+    $next = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['next_run'] ?? '')) ? $in['next_run'] : (date('j') <= $day ? date('Y-m-') . sprintf('%02d', $day) : fh_recurring_next(today(), $day, 1));
+    $end = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['end_date'] ?? '')) ? $in['end_date'] : null;
+    if ($end && $end < $next) throw new AppException('A data de encerramento é anterior à próxima emissão.');
     $d = ['emitter_id' => $em['id'], 'taker_id' => $taker['id'], 'service_id' => $svc['id'] ?? null, 'amount' => $amount, 'description' => mb_substr(trim((string)($in['description'] ?? '')), 0, 2000),
-        'day_of_month' => $day, 'next_run' => $next, 'end_date' => preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($in['end_date'] ?? '')) ? $in['end_date'] : null, 'active' => filter_var($in['active'] ?? true, FILTER_VALIDATE_BOOLEAN) ? 1 : 0, 'updated_at' => now()];
+        'day_of_month' => $day, 'interval_months' => $interval, 'due_day' => (int)($in['due_day'] ?? 0) >= 1 ? min(31, (int)$in['due_day']) : null, 'next_run' => $next, 'end_date' => $end, 'active' => filter_var($in['active'] ?? true, FILTER_VALIDATE_BOOLEAN) ? 1 : 0, 'updated_at' => now()];
     if (!$svc) throw new AppException('Escolha o serviço (com os códigos fiscais) da nota recorrente. Cadastre-o em Serviços, se ainda não existir.');
+    if (trim($d['description']) === '') throw new AppException('Descreva o serviço da nota (discriminação).');
     if ($existing) { db_update('fh_recurring', (int)$existing['id'], $d); return db_find('fh_recurring', (int)$existing['id']); }
     return db_find('fh_recurring', db_insert('fh_recurring', $d + ['created_at' => now()]));
 };
@@ -362,13 +405,46 @@ route('POST', '/fh/recurring', function () use ($fhRecurringSave) {
 });
 route('PUT', '/fh/recurring/{id}', function ($p) use ($fhRecurringSave) {
     [$cid] = fh_guard();
-    $r = db_one('SELECT r.* FROM fh_recurring r JOIN fh_emitters e ON e.id = r.emitter_id WHERE r.id = ? AND e.customer_id = ?', [(int)$p['id'], $cid]);
-    if (!$r) json_error('Recorrência não encontrada.', 404);
+    $r = fh_recurring_owned($cid, $p['id']);
     json_out($fhRecurringSave($cid, input() + $r, $r));
+});
+route('POST', '/fh/recurring/{id}/toggle', function ($p) {
+    [$cid] = fh_guard();
+    $r = fh_recurring_owned($cid, $p['id']);
+    $upd = ['active' => (int)$r['active'] ? 0 : 1, 'updated_at' => now()];
+    // resuming after a pause: never schedule in the past (the missed months are not emitted retroactively)
+    if (!(int)$r['active'] && $r['next_run'] < today()) $upd['next_run'] = date('j') <= (int)$r['day_of_month'] ? date('Y-m-') . sprintf('%02d', (int)$r['day_of_month']) : fh_recurring_next(today(), (int)$r['day_of_month'], 1);
+    db_update('fh_recurring', (int)$r['id'], $upd);
+    json_out(db_find('fh_recurring', (int)$r['id']));
+});
+route('POST', '/fh/recurring/{id}/run', function ($p) {
+    [$cid] = fh_guard();
+    fh_require_flag($cid, 'recurring');
+    fh_require_emit($cid);
+    $r = fh_recurring_owned($cid, $p['id']);
+    // Emits the pending occurrence now (its month fills the description; the competence is never in the future)
+    try {
+        $inv = fh_recurring_emit($r, (string)$r['next_run']);
+    } catch (NfseException $e) {
+        json_error($e->getMessage(), 422, ['details' => $e->details]);
+    }
+    db_update('fh_recurring', (int)$r['id'], ['last_run' => today(), 'next_run' => fh_recurring_next((string)$r['next_run'], (int)$r['day_of_month'], (int)($r['interval_months'] ?? 1) ?: 1), 'updated_at' => now()]);
+    json_out(['invoice' => fh_invoice_public($inv)]);
+});
+route('GET', '/fh/recurring/{id}/history', function ($p) {
+    [$cid] = fh_guard();
+    $r = fh_recurring_owned($cid, $p['id']);
+    json_out(['data' => db_all('SELECT id, status, nfse_number, dps_number, amount, competence_date, issued_at, created_at, error_message FROM fh_invoices WHERE recurring_id = ? ORDER BY id DESC LIMIT 60', [$r['id']])]);
+});
+route('POST', '/fh/recurring/{id}/duplicate', function ($p) use ($fhRecurringSave) {
+    [$cid] = fh_guard();
+    $r = fh_recurring_owned($cid, $p['id']);
+    json_out($fhRecurringSave($cid, ['active' => false, 'next_run' => ''] + $r, null), 201);
 });
 route('DELETE', '/fh/recurring/{id}', function ($p) {
     [$cid] = fh_guard();
-    db_exec('DELETE FROM fh_recurring WHERE id = ? AND emitter_id IN (SELECT id FROM fh_emitters WHERE customer_id = ?)', [(int)$p['id'], $cid]);
+    $r = fh_recurring_owned($cid, $p['id']);
+    db_exec('DELETE FROM fh_recurring WHERE id = ?', [$r['id']]);
     json_out(['ok' => true]);
 });
 

@@ -523,7 +523,7 @@ function fhf_invoice_entry(int $cid, array $inv, array $s): int
     $num = $inv['nfse_number'] ?: ('DPS ' . $inv['dps_number']);
     return db_insert('fh_fin_entries', ['customer_id' => $cid, 'emitter_id' => $inv['emitter_id'], 'kind' => 'receivable', 'description' => mb_substr('NFS-e nº ' . $num . ' — ' . ($inv['service_name'] ?: mb_substr((string)$inv['description'], 0, 60)), 0, 255),
         'category_id' => $cat ?: null, 'account_id' => $s['receivable_account_id'] ?: null, 'party_name' => $inv['toma_name'], 'party_document' => only_digits((string)$inv['toma_document']) ?: null, 'taker_id' => $inv['taker_id'] ?: null,
-        'invoice_id' => $inv['id'], 'amount' => $amount, 'due_date' => date('Y-m-d', strtotime($issued . ' +' . (int)$s['receivable_days'] . ' days')), 'competence_date' => $inv['competence_date'] ?: $issued,
+        'invoice_id' => $inv['id'], 'amount' => $amount, 'due_date' => (json_decode((string)($inv['extra'] ?? ''), true)['vencimento'] ?? null) ?: date('Y-m-d', strtotime($issued . ' +' . (int)$s['receivable_days'] . ' days')), 'competence_date' => $inv['competence_date'] ?: $issued,
         'status' => 'open', 'document_number' => 'NFS-e ' . $num, 'origin' => 'invoice', 'created_at' => now(), 'updated_at' => now()]);
 }
 

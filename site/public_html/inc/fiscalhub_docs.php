@@ -63,6 +63,7 @@ function fh_danfse_data(array $inv, array $em): array
     $nbs = (string)($inv['cnbs'] ?? '');
     $info = [];
     if ($nbs !== '') $info[] = 'NBS: ' . $nbs . (($n = nfse_tables()['nbs'][$nbs] ?? '') ? ' - ' . $n : '');
+    if (!empty($x['vencimento'])) $info[] = 'Data de vencimento: ' . date('d/m/Y', strtotime($x['vencimento']));
     if ($inv['lc116']) $info[] = 'Item da lista de serviços (LC 116/2003): ' . $inv['lc116'];
     if ($inv['provider'] === 'sigiss') $info[] = 'NFS-e emitida pelo SIGISS da Prefeitura de Marília' . ($inv['verification_code'] ? ' · código de verificação ' . $inv['verification_code'] : '') . ($inv['print_url'] ? ' · via oficial: ' . $inv['print_url'] : '');
     if (!empty($x['obra'])) $info[] = 'Obra: ' . trim(implode(' ', array_filter([$x['obra']['codigo'] ?? '', $x['obra']['cib'] ?? '', $x['obra']['street'] ?? '', $x['obra']['number'] ?? '', $x['obra']['cep'] ?? ''])));
@@ -349,33 +350,61 @@ function fh_batch_import(array $em, string $csv): array
 
 /* ============================================================== RECURRING */
 
-function fh_recurring_next(string $from, int $day): string
+const FH_RECURRING_INTERVALS = [1 => 'Mensal', 2 => 'Bimestral', 3 => 'Trimestral', 6 => 'Semestral', 12 => 'Anual'];
+const FH_MONTHS = ['', 'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+
+/** Next emission date: $months after the month of $from, on $day (clamped to the month length). */
+function fh_recurring_next(string $from, int $day, int $months = 1): string
 {
-    $base = strtotime(date('Y-m-01', strtotime($from)) . ' +1 month');
+    $base = strtotime(date('Y-m-01', strtotime($from)) . ' +' . max(1, $months) . ' month');
     return date('Y-m-', $base) . sprintf('%02d', min($day, (int)date('t', $base)));
+}
+
+/** Due date of an occurrence emitted on $date: day $dueDay of the same month, or of the next one if it already passed. */
+function fh_recurring_due(string $date, $dueDay): ?string
+{
+    $dueDay = (int)$dueDay;
+    if ($dueDay < 1) return null;
+    $ts = strtotime(date('Y-m-01', strtotime($date)));
+    $due = date('Y-m-', $ts) . sprintf('%02d', min($dueDay, (int)date('t', $ts)));
+    if ($due < $date) { $ts = strtotime(date('Y-m-01', $ts) . ' +1 month'); $due = date('Y-m-', $ts) . sprintf('%02d', min($dueDay, (int)date('t', $ts))); }
+    return $due;
+}
+
+/** Description with the {mes} {ano} {mes_ano} {mm/aaaa} {data_vencimento} placeholders filled for the emission date. */
+function fh_recurring_text(string $text, string $date, ?string $due = null): string
+{
+    $ts = strtotime($date);
+    return strtr($text, ['{mes}' => FH_MONTHS[(int)date('n', $ts)], '{ano}' => date('Y', $ts), '{mes_ano}' => FH_MONTHS[(int)date('n', $ts)] . '/' . date('Y', $ts), '{mm/aaaa}' => date('m/Y', $ts),
+        '{data_vencimento}' => $due ? date('d/m/Y', strtotime($due)) : '', '{vencimento}' => $due ? date('d/m/Y', strtotime($due)) : '']);
+}
+
+/** Emit the occurrence of a recurrence due on $date (draft → transmit). Returns the invoice. */
+function fh_recurring_emit(array $r, string $date): array
+{
+    $em = db_find('fh_emitters', (int)$r['emitter_id']);
+    $due = fh_recurring_due(max($date, today()), $r['due_day'] ?? null);
+    $inv = fh_invoice_save($em, ['taker_id' => $r['taker_id'], 'service_id' => $r['service_id'], 'amount' => $r['amount'], 'description' => fh_recurring_text((string)$r['description'], $date, $due),
+        'competence_date' => min($date, today()), 'recurring_id' => $r['id'], 'extra' => $due ? ['vencimento' => $due] : []], null, 'recurring');
+    return fh_transmit((int)$inv['id']);
 }
 
 function fh_recurring_run(): array
 {
     $out = ['emitted' => 0, 'errors' => []];
-    $months = ['', 'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
     foreach (db_all("SELECT r.*, e.customer_id FROM fh_recurring r JOIN fh_emitters e ON e.id = r.emitter_id WHERE r.active = 1 AND r.next_run <= ? AND e.active = 1 LIMIT 200", [today()]) as $r) {
-        $next = fh_recurring_next($r['next_run'], (int)$r['day_of_month']);
+        $next = fh_recurring_next($r['next_run'], (int)$r['day_of_month'], (int)($r['interval_months'] ?? 1));
         try {
             $plan = fh_access((int)$r['customer_id'])['plan'];
             if (empty($plan['flags']['recurring'])) throw new AppException('Plano sem notas recorrentes.');
             if ($r['end_date'] && $r['next_run'] > $r['end_date']) { db_update('fh_recurring', (int)$r['id'], ['active' => 0, 'updated_at' => now()]); continue; }
-            $em = db_find('fh_emitters', (int)$r['emitter_id']);
-            $ts = strtotime($r['next_run']);
-            $desc = strtr((string)$r['description'], ['{mes}' => $months[(int)date('n', $ts)], '{ano}' => date('Y', $ts), '{mes_ano}' => $months[(int)date('n', $ts)] . '/' . date('Y', $ts), '{mm/aaaa}' => date('m/Y', $ts)]);
-            $inv = fh_invoice_save($em, ['taker_id' => $r['taker_id'], 'service_id' => $r['service_id'], 'amount' => $r['amount'], 'description' => $desc, 'competence_date' => min($r['next_run'], today()), 'recurring_id' => $r['id']], null, 'recurring');
-            fh_transmit((int)$inv['id']);
+            fh_recurring_emit($r, $r['next_run']);
             $out['emitted']++;
         } catch (Throwable $e) {
             $out['errors'][] = "#{$r['id']}: " . $e->getMessage();
             log_line('fiscalhub', 'recurring failed', ['id' => $r['id'], 'error' => $e->getMessage()]);
             $c = db_find('customers', (int)$r['customer_id']);
-            if ($c && !empty($c['email'])) mail_queue($c['email'], 'Nota recorrente não emitida — ' . FH_NAME, mail_template('Não conseguimos emitir uma nota recorrente', '<p>A nota recorrente programada para ' . date('d/m/Y', strtotime($r['next_run'])) . ' não foi emitida:</p><p><b>' . e($e->getMessage()) . '</b></p><p>Corrija e emita manualmente pelo Fiscal Hub. A próxima tentativa acontece no próximo mês.</p>', ['label' => 'Abrir o Fiscal Hub', 'url' => app_link('/cliente/fiscal/#/notas')]), ['event' => 'fh_recurring_error']);
+            if ($c && !empty($c['email'])) mail_queue($c['email'], 'Nota recorrente não emitida — ' . FH_NAME, mail_template('Não conseguimos emitir uma nota recorrente', '<p>A nota recorrente programada para ' . date('d/m/Y', strtotime($r['next_run'])) . ' não foi emitida:</p><p><b>' . e($e->getMessage()) . '</b></p><p>Corrija e emita manualmente pelo Fiscal Hub (botão "Emitir agora" em Notas recorrentes).</p>', ['label' => 'Abrir o Fiscal Hub', 'url' => app_link('/cliente/fiscal/#/recorrentes')]), ['event' => 'fh_recurring_error']);
         }
         db_update('fh_recurring', (int)$r['id'], ['last_run' => today(), 'next_run' => $next, 'updated_at' => now()]);
     }

@@ -811,7 +811,7 @@ function schema_statements(string $driver): array
 }
 
 /** Bump when tables/indexes are added; api/index.php migrates automatically. */
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 /** Columns added after the first release: [table, column, definition]. */
 function schema_added_columns(string $driver): array
@@ -887,6 +887,9 @@ function schema_added_columns(string $driver): array
         ['nfse_invoices', 'total_taxes_pct', 'DECIMAL(6,2) NOT NULL DEFAULT 0'],
         ['nfse_invoices', 'total_taxes_amount', 'DECIMAL(14,2) NOT NULL DEFAULT 0'],
         ['nfse_invoices', 'net_amount', 'DECIMAL(14,2) NULL'],
+        // v10: recurring invoices every N months (1 mensal, 2 bimestral, 3 trimestral, 6 semestral, 12 anual)
+        ['fh_recurring', 'interval_months', 'INT NOT NULL DEFAULT 1'],
+        ['fh_recurring', 'due_day', 'INT NULL'], // payment due day (fills {data_vencimento} and the receivable)
     ];
 }
 
