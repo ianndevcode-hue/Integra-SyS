@@ -65,7 +65,7 @@ export async function render(el, ctx) {
           ${nac ? `<div class="field"><label>Código de tributação nacional</label><input name="ctribnac" value="${esc(val('ctribnac'))}" maxlength="6" inputmode="numeric" placeholder="ex.: 170101"></div>`
             : `<div class="field"><label>Código do serviço no SIGISS</label><input name="sigiss_code" value="${esc(val('sigiss_code'))}" inputmode="numeric" placeholder="ex.: 1701"></div>`}
           <div class="field"><label>Código municipal ${nac ? '(cTribMun)' : ''}</label><input name="ctribmun" value="${esc(val('ctribmun'))}" maxlength="3" inputmode="numeric" placeholder="deixe em branco"><span class="help">Só se a prefeitura informou um código próprio no Emissor Nacional (Marília não usa). Não é o código do SIGISS.</span></div>
-          <div class="field"><label>Código NBS</label><input name="cnbs" value="${esc(val('cnbs'))}" maxlength="9" inputmode="numeric" placeholder="opcional, 9 dígitos"></div>
+          <div class="field"><label>Código NBS</label><input name="cnbs" list="fh-nbs" value="${esc(val('cnbs'))}" maxlength="9" inputmode="numeric" placeholder="opcional, 9 dígitos"><datalist id="fh-nbs"></datalist><span class="help" data-nbs-help>Escolha o item da LC 116 para ver os códigos NBS oficiais do serviço.</span></div>
           <div class="field"><label>Competência</label><input type="date" name="competence_date" value="${esc(val('competence_date', today()))}" max="${today()}"></div>
           <div class="field span-2" style="grid-column:1/-1"><label>Discriminação do serviço *</label><textarea name="description" rows="4" placeholder="Descreva o serviço prestado, período, contrato, etc.">${esc(x.desc_raw || '')}</textarea><span class="help">A linha de tributos aproximados (Lei 12.741) é adicionada automaticamente.</span></div>
         </div></section>
@@ -78,7 +78,7 @@ export async function render(el, ctx) {
           <div class="field"><label>Desconto condicionado (R$)</label><input name="discount_cond" type="number" step="0.01" min="0" value="${esc(val('discount_cond', ''))}"></div>
           <div class="field"><label>Deduções da base (R$)</label><input name="deductions" type="number" step="0.01" min="0" value="${esc(val('deductions', ''))}"></div>
           <div class="field"><label>Tipo de dedução</label><select name="x_ded_tipo"><option value="">—</option>${opt(Object.entries(fh.me.ded_types), x.ded_tipo)}</select></div>
-          <div class="field" data-sit="im"><label>Tipo de imunidade</label><select name="x_imunidade">${opt(Object.entries(fh.me.imunidades), x.imunidade || '0')}</select></div>
+          <div class="field" data-sit="im"><label>Tipo de imunidade</label><select name="x_imunidade">${opt([['', 'Selecione o tipo…'], ...Object.entries(fh.me.imunidades).filter(([k]) => k !== '0')], x.imunidade === '0' ? '' : x.imunidade)}</select></div>
           <div class="field" data-sit="es"><label>Exigibilidade suspensa por</label><select name="x_exig_tipo"><option value="1" ${x.exig?.tipo === '1' ? 'selected' : ''}>Decisão judicial</option><option value="2" ${x.exig?.tipo === '2' ? 'selected' : ''}>Processo administrativo</option></select></div>
           <div class="field span-2" data-sit="es"><label>Número do processo</label><input name="x_exig_processo" value="${esc((x.exig?.processo || '').replace(/^0+/, ''))}" inputmode="numeric"></div>
           <div class="field span-2" data-sit="is"><label>Número do benefício municipal (14 dígitos)</label><input name="x_bm_numero" value="${esc(x.bm?.numero || '')}" inputmode="numeric" placeholder="${nac ? 'obrigatório no Emissor Nacional' : 'opcional'}"></div>
@@ -139,7 +139,7 @@ export async function render(el, ctx) {
             <div class="field"><label>Nº do pedido / OC</label><input name="x_info_pedido" value="${esc(x.info?.pedido || '')}"></div>
             <div class="field"><label>Documento de referência</label><input name="x_info_doc_ref" value="${esc(x.info?.doc_ref || '')}"></div>
             <div class="field"><label>Código interno do serviço</label><input name="x_codigo_interno" value="${esc(x.codigo_interno || '')}" maxlength="20"></div>
-            ${nac ? `<div class="field"><label>Valor recebido pelo intermediário</label><input name="x_v_receb" type="number" step="0.01" value="${esc(x.v_receb || '')}"></div>` : `<label class="check"><input type="checkbox" name="x_retro" ${x.retro ? 'checked' : ''}> Nota retroativa (competência anterior)</label>`}
+            ${nac ? '' : `<label class="check"><input type="checkbox" name="x_retro" ${x.retro ? 'checked' : ''}> Nota retroativa (competência anterior)</label>`}
           </div></fieldset>
         </div></details>
       </div>
@@ -237,7 +237,15 @@ export async function render(el, ctx) {
     ['pis', 'cofins', 'csll', 'irrf', 'inss'].forEach((k) => { if (s[k + '_rate'] !== null && s[k + '_rate'] !== undefined && s[k + '_rate'] !== '') F[k + '_rate'].value = s[k + '_rate']; });
     syncSituation(); refresh();
   };
-  F.service_id.addEventListener('change', applyService);
+  // Official NBS 2.0 codes correlated with the LC 116 item (gov.br/nfse Anexo VIII): a code outside the table is rejected (E0316).
+  const syncNbs = () => {
+    const it = lc.find((i) => i.code === F.lc116.value.split('—')[0].trim());
+    const list = it?.nbs || [];
+    $('#fh-nbs', el).innerHTML = list.map((n) => `<option value="${n.code}">${esc(n.name)}</option>`).join('');
+    $('[data-nbs-help]', el).textContent = list.length ? `Códigos NBS do item ${it.code}: ${list.map((n) => n.code).join(', ')} (clique no campo para ver a descrição).` : 'Escolha o item da LC 116 para ver os códigos NBS oficiais do serviço.';
+  };
+  F.lc116.addEventListener('change', syncNbs);
+  F.service_id.addEventListener('change', () => { applyService(); syncNbs(); });
   F.lc116.addEventListener('change', () => {
     const code = F.lc116.value.split('—')[0].trim();
     const it = lc.find((i) => i.code === code || i.code.replace(/^0/, '') === code);
@@ -245,6 +253,7 @@ export async function render(el, ctx) {
   });
   if (!inv && firstService) applyService();
   if (inv?.lc116) { const it = lc.find((i) => i.code === inv.lc116); if (it) F.lc116.value = `${it.code} — ${it.name}`; }
+  syncNbs();
 
   /* ----- situation & specials ----- */
   const syncSituation = () => {

@@ -83,7 +83,7 @@ function renderForm(el, em) {
       <section class="card"><div class="card-head"><h3>${icon('shield')} Regime tributário</h3></div><div class="card-body form-grid cols-4">
         ${f({ name: 'op_simp_nac', label: 'Situação no Simples Nacional', type: 'select', empty: false, span: 2, options: REGIMES.map(([value, label]) => ({ value, label })) })}
         ${f({ name: 'reg_esp_trib', label: 'Regime especial', type: 'select', empty: false, options: Object.entries(fh.me.reg_esp).map(([value, label]) => ({ value, label })) })}
-        ${f({ name: 'reg_ap_trib_sn', label: 'Apuração no Simples (se ultrapassou sublimite)', type: 'select', empty: 'Normal (não informar)', options: [{ value: '1', label: 'Federais e ISS pelo Simples' }, { value: '2', label: 'Federais pelo Simples, ISS fora' }, { value: '3', label: 'Federais e ISS fora do Simples' }] })}
+        ${f({ name: 'reg_ap_trib_sn', label: 'Apuração no Simples (ME/EPP)', type: 'select', empty: 'Padrão: federais e ISS pelo Simples', help: 'Mude só se ultrapassou o sublimite. Não se aplica a MEI e não optantes.', options: [{ value: '1', label: 'Federais e ISS pelo Simples' }, { value: '2', label: 'Federais pelo Simples, ISS fora' }, { value: '3', label: 'Federais e ISS fora do Simples' }] })}
         ${f({ name: 'iss_rate', label: 'Alíquota padrão do ISS (%)', type: 'number', step: '0.01', min: 0, max: 5, help: 'No Simples, use a alíquota de ISS da sua faixa.' })}
         ${f({ name: 'simples_rate', label: 'Alíquota efetiva do Simples (%)', type: 'number', step: '0.01', min: 0, max: 33, help: 'Para "tributos aproximados" (Lei 12.741).' })}
         ${f({ name: 'total_tax_pct', label: 'Carga tributária aproximada (%)', type: 'number', step: '0.01', min: 0, max: 60, help: 'Opcional (tabela IBPT).' })}

@@ -2,6 +2,9 @@
 import { $, $$, esc, icon, toast, toastError, BRAND_MARK } from '/admin/js/core.js';
 import { fh } from '/assets/fiscal/state.js';
 
+// Same version as app.js (?v=mtime from cliente/fiscal/index.php): a deploy changes the URL of every view.
+const ASSET_V = new URL(import.meta.url).search;
+
 const NAV = [
   { group: null, items: [['/', 'Painel', 'home'], ['/emitir', 'Emitir nota', 'plus']] },
   { group: 'Notas', items: [['/notas', 'Notas fiscais', 'file'], ['/recorrentes', 'Recorrentes', 'refresh', 'recurring'], ['/lote', 'Emissão em lote', 'upload', 'batch']] },
@@ -113,7 +116,7 @@ async function route() {
   cleanup = null;
   view.innerHTML = '<div class="loading-box">Carregando...</div>';
   try {
-    const mod = await import(`/assets/fiscal/views/${match.mod}.js`);
+    const mod = await import(`/assets/fiscal/views/${match.mod}.js${ASSET_V}`);
     const ctx = { id: match.m[1] && /^\d+$/.test(match.m[1]) ? +match.m[1] : null, key: match.m[1] || null, sub: match.sub, query, setTitle: (t) => { $('[data-title]').textContent = t; } };
     cleanup = await mod.render(view, ctx);
     window.scrollTo(0, 0);
@@ -136,7 +139,7 @@ async function boot() {
     return;
   }
   if (!fh.access.sub) {
-    const { renderNoPlan } = await import('/assets/fiscal/views/assinatura.js');
+    const { renderNoPlan } = await import(`/assets/fiscal/views/assinatura.js${ASSET_V}`);
     renderNoPlan(root);
     return;
   }

@@ -1043,13 +1043,13 @@ function fhf_entries_csv(array $rows): string
 {
     $f = fopen('php://temp', 'r+');
     fwrite($f, "\xEF\xBB\xBF");
-    fputcsv($f, ['Tipo', 'Descrição', 'Cliente/Fornecedor', 'CPF/CNPJ', 'Categoria', 'Conta', 'Vencimento', 'Competência', 'Valor', 'Situação', 'Pago em', 'Valor pago', 'Juros', 'Desconto', 'Forma', 'Documento', 'Centro de custo'], ';');
+    fputcsv($f, ['Tipo', 'Descrição', 'Cliente/Fornecedor', 'CPF/CNPJ', 'Categoria', 'Conta', 'Vencimento', 'Competência', 'Valor', 'Situação', 'Pago em', 'Valor pago', 'Juros', 'Desconto', 'Forma', 'Documento', 'Centro de custo'], ';', '"', '\\');
     $st = ['open' => 'Em aberto', 'overdue' => 'Vencido', 'paid' => 'Pago', 'canceled' => 'Cancelado'];
     $br = fn($v) => $v === null ? '' : number_format((float)$v, 2, ',', '');
     $d = fn($v) => $v ? date('d/m/Y', strtotime($v)) : '';
     foreach ($rows as $r) {
         fputcsv($f, [$r['kind'] === 'receivable' ? 'A receber' : 'A pagar', $r['description'], $r['party_name'] ?? '', $r['party_document'] ?? '', $r['category_name'] ?? '', $r['account_name'] ?? '', $d($r['due_date']), $d($r['competence_date']),
-            $br($r['amount']), $st[$r['display_status']] ?? $r['status'], $d($r['paid_at']), $br($r['paid_amount']), $br($r['interest']), $br($r['discount']), FHF_METHODS[$r['payment_method'] ?? ''] ?? '', $r['document_number'] ?? '', $r['cost_center'] ?? ''], ';');
+            $br($r['amount']), $st[$r['display_status']] ?? $r['status'], $d($r['paid_at']), $br($r['paid_amount']), $br($r['interest']), $br($r['discount']), FHF_METHODS[$r['payment_method'] ?? ''] ?? '', $r['document_number'] ?? '', $r['cost_center'] ?? ''], ';', '"', '\\');
     }
     rewind($f);
     return stream_get_contents($f);

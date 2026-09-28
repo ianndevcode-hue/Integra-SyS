@@ -45,8 +45,12 @@ ErrorDocument 404 /404.php
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
   Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
-  <FilesMatch "\.(css|js|svg|png|jpg|jpeg|webp|woff2)$">
+  <FilesMatch "\.(svg|png|jpg|jpeg|webp|woff2)$">
     Header set Cache-Control "public, max-age=2592000"
+  </FilesMatch>
+  # CSS/JS: revalidate on every load (304 when unchanged) so a deploy reaches every browser at once
+  <FilesMatch "\.(css|js)$">
+    Header set Cache-Control "no-cache"
   </FilesMatch>
 </IfModule>
 

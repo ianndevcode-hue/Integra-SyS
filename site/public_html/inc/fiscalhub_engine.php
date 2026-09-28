@@ -267,7 +267,7 @@ function fh_test_connection(array $em): array
         return ['ok' => !$auth, 'messages' => $auth ?: ['Acesso ao SIGISS de Marília confirmado.']];
     }
     $cert = fh_certificate($em);
-    $base = NFSE_ENDPOINTS[$em['environment'] === 'production' ? 'production' : 'homologation'];
+    $base = ['sefin' => nfse_endpoint((string)$em['environment'], 'sefin'), 'adn' => nfse_endpoint((string)$em['environment'], 'adn')];
     $msgs = ['Certificado válido até ' . date('d/m/Y', strtotime($cert['info']['valid_to'])) . ' (' . $cert['info']['subject'] . ').'];
     foreach ([$base['sefin'] . '/parametros_municipais/' . $em['city_ibge'] . '/convenio', $base['adn'] . '/parametros_municipais/' . $em['city_ibge'] . '/convenio'] as $url) {
         try {
@@ -339,6 +339,7 @@ function fh_service_save(array $em, array $in, ?array $existing): array
             if ($d[$k] !== null && strlen($d[$k]) !== $len) throw new AppException(['ctribnac' => 'O código de tributação nacional tem 6 dígitos (ex.: 010701).', 'ctribmun' => 'O código de tributação municipal tem 3 dígitos.', 'cnbs' => 'O código NBS tem 9 dígitos (ex.: 115022000).'][$k]);
         }
     }
+    if (!empty($d['cnbs']) && ($msg = nfse_nbs_problem((string)$d['cnbs'], (string)($d['lc116'] ?? $existing['lc116'] ?? '')))) throw new AppException($msg);
     if (isset($d['sigiss_code'])) $d['sigiss_code'] = only_digits((string)$d['sigiss_code']) ?: null;
     if (isset($d['sigiss_situacao']) && !isset(FH_ISS_SITUATIONS[$d['sigiss_situacao']])) $d['sigiss_situacao'] = 'tp';
     foreach (['iss_rate', 'price', 'pis_rate', 'cofins_rate', 'csll_rate', 'irrf_rate', 'inss_rate'] as $k) if (array_key_exists($k, $d)) $d[$k] = $d[$k] === '' || $d[$k] === null ? null : max(0, (float)str_replace(',', '.', (string)$d[$k]));
@@ -522,7 +523,8 @@ function fh_invoice_save(array $em, array $in, ?array $existing = null, string $
 
 /* ------------------------------------------------------------ DPS (nacional) */
 
-function fh_build_dps(array $inv, array $em): string
+/** @param bool|null $aliq force pAliq on/off (retry after an E06xx rejection); null = official rules. */
+function fh_build_dps(array $inv, array $em, ?bool $aliq = null): string
 {
     $x = json_decode((string)$inv['extra'], true) ?: [];
     $t = json_decode((string)$inv['toma_json'], true) ?: [];
@@ -565,10 +567,11 @@ function fh_build_dps(array $inv, array $em): string
     $fone = only_digits((string)$em['phone']);
     if (strlen($fone) >= 6 && strlen($fone) <= 20) $el($prest, 'fone', $fone);
     if (filter_var($em['email'], FILTER_VALIDATE_EMAIL)) $el($prest, 'email', mb_substr((string)$em['email'], 0, 80));
+    [$regAp, $regEsp] = nfse_regime((string)$em['op_simp_nac'], $em['reg_ap_trib_sn'] ?? '', $em['reg_esp_trib'] ?? '0', (string)$inv['trib_issqn']);
     $reg = $el($prest, 'regTrib');
     $el($reg, 'opSimpNac', (string)$em['op_simp_nac']);
-    if ($em['op_simp_nac'] === '3' && in_array((string)$em['reg_ap_trib_sn'], ['1', '2', '3'], true)) $el($reg, 'regApTribSN', (string)$em['reg_ap_trib_sn']);
-    $el($reg, 'regEspTrib', (string)($em['reg_esp_trib'] ?: '0'));
+    if ($regAp !== '') $el($reg, 'regApTribSN', $regAp);
+    $el($reg, 'regEspTrib', $regEsp);
     // pessoa (tomador / intermediário)
     $person = function (string $tag, array $p) use ($inf, $el, $txt) {
         $kind = $p['kind'] ?? 'pj';
@@ -674,8 +677,7 @@ function fh_build_dps(array $inv, array $em): string
     }
     // valores
     $val = $el($inf, 'valores');
-    $vsp = $el($val, 'vServPrest');
-    if (!empty($x['v_receb'])) $el($vsp, 'vReceb', $num($x['v_receb']));
+    $vsp = $el($val, 'vServPrest'); // vReceb is only for DPS issued by the intermediary (E0424)
     $el($vsp, 'vServ', $num($inv['amount']));
     if ((float)$inv['discount_incond'] > 0 || (float)$inv['discount_cond'] > 0) {
         $d = $el($val, 'vDescCondIncond');
@@ -691,7 +693,7 @@ function fh_build_dps(array $inv, array $em): string
     $tm = $el($trib, 'tribMun');
     $el($tm, 'tribISSQN', (string)$inv['trib_issqn']);
     if ($inv['trib_issqn'] === '3') $el($tm, 'cPaisResult', (string)($x['pais_resultado'] ?? ''));
-    if ($inv['trib_issqn'] === '2') $el($tm, 'tpImunidade', $x['imunidade'] ?? '0');
+    if ($inv['trib_issqn'] === '2') $el($tm, 'tpImunidade', (string)($x['imunidade'] ?? ''));
     if (!empty($x['exig'])) { $es = $el($tm, 'exigSusp'); $el($es, 'tpSusp', $x['exig']['tipo']); $el($es, 'nProcesso', $x['exig']['processo']); }
     if (!empty($x['bm'])) {
         $bm = $el($tm, 'BM');
@@ -700,7 +702,8 @@ function fh_build_dps(array $inv, array $em): string
         elseif (!empty($x['bm']['percentual'])) $el($bm, 'pRedBCBM', $num($x['bm']['percentual']));
     }
     $el($tm, 'tpRetISSQN', (string)$inv['iss_retention']);
-    if ((float)$inv['iss_rate'] > 0 && $inv['trib_issqn'] === '1') $el($tm, 'pAliq', $num($inv['iss_rate']));
+    $sendAliq = $aliq ?? nfse_send_aliq((string)$em['op_simp_nac'], $regAp, $regEsp, (string)$inv['trib_issqn'], $inv['iss_retention'] !== '1');
+    if ($sendAliq && (float)$inv['iss_rate'] > 0 && $inv['trib_issqn'] === '1') $el($tm, 'pAliq', $num($inv['iss_rate']));
     $pis = (float)$inv['pis_amount'];
     $cof = (float)$inv['cofins_amount'];
     if ($pis > 0 || $cof > 0 || $inv['inss_withheld'] || $inv['irrf_withheld'] || $inv['csll_withheld']) {
@@ -720,21 +723,70 @@ function fh_build_dps(array $inv, array $em): string
         if ($inv['irrf_withheld']) $el($fed, 'vRetIRRF', $num($inv['irrf_amount']));
         if ($inv['csll_withheld']) $el($fed, 'vRetCSLL', $num($inv['csll_amount']));
     }
-    $tot = $el($trib, 'totTrib');
-    if ($em['op_simp_nac'] === '2') {
-        $el($tot, 'indTotTrib', '0');
-    } elseif ($em['op_simp_nac'] === '3' && (float)$em['simples_rate'] > 0) {
-        $el($tot, 'pTotTribSN', $num($em['simples_rate']));
-    } elseif ((float)$inv['total_taxes_pct'] > 0) {
-        $p = $el($tot, 'pTotTrib');
-        $fedPct = (float)$inv['pis_rate'] + (float)$inv['cofins_rate'] + (float)$inv['csll_rate'] + (float)$inv['irrf_rate'];
-        $el($p, 'pTotTribFed', $num($fedPct));
-        $el($p, 'pTotTribEst', '0.00');
-        $el($p, 'pTotTribMun', $num($inv['iss_rate']));
-    } else {
-        $el($tot, 'indTotTrib', '0');
-    }
+    $fedPct = (float)$inv['pis_rate'] + (float)$inv['cofins_rate'] + (float)$inv['csll_rate'] + (float)$inv['irrf_rate'];
+    nfse_append_tot_trib($dom, $trib, nfse_tot_trib((string)$em['op_simp_nac'], (float)$em['simples_rate'], (float)$inv['total_taxes_pct'], $fedPct, (float)$inv['iss_rate']));
     return $dom->saveXML($dom->documentElement);
+}
+
+/**
+ * Pre-flight check of a DPS against the Sefin business rules (Anexo I) that the XSD cannot express.
+ * Returns human messages (empty = OK). Each rule cites the rejection it prevents.
+ */
+function fh_dps_problems(array $inv, array $em): array
+{
+    $p = [];
+    $x = json_decode((string)$inv['extra'], true) ?: [];
+    $t = json_decode((string)$inv['toma_json'], true) ?: [];
+    $op = (string)$em['op_simp_nac'];
+    $trib = (string)$inv['trib_issqn'];
+    $ret = (string)$inv['iss_retention'];
+    [, $regEsp] = nfse_regime($op, $em['reg_ap_trib_sn'] ?? '', $em['reg_esp_trib'] ?? '0', $trib);
+    $doc = only_digits((string)($inv['toma_document'] ?? ''));
+    $kind = (string)($inv['toma_kind'] ?: 'pj');
+    $amount = (float)$inv['amount'];
+    $hasAddr = strlen(only_digits((string)($t['city_ibge'] ?? ''))) === 7 && strlen(only_digits((string)($t['cep'] ?? ''))) === 8 && trim((string)($t['street'] ?? '')) !== '';
+    // tomador
+    if ($doc !== '' && $doc === only_digits((string)$em['document'])) $p[] = 'O tomador não pode ser a própria empresa emissora (E0202).';
+    if ($kind !== 'ext' && strlen($doc) === 14 && !$hasAddr) $p[] = 'Tomador com CNPJ precisa de endereço completo: CEP, rua e município (E0235). Abra o cadastro do cliente e informe o CEP.';
+    if ($ret === '2') {
+        if ($kind === 'pfni' || !in_array(strlen($doc), [11, 14], true)) $p[] = 'Para o ISS retido pelo tomador, informe o CPF/CNPJ do tomador (E0204).';
+        elseif (!$hasAddr) $p[] = 'Para o ISS retido pelo tomador, o endereço do tomador é obrigatório (E0237).';
+    }
+    if ($ret === '3') $p[] = 'A retenção do ISS pelo intermediário exige o endereço do intermediário, que este emissor ainda não envia (E0293). Use "ISS retido pelo tomador" ou emita pelo portal nacional.';
+    // retenção x regime
+    if ($ret !== '1') {
+        if ($op === '2') $p[] = 'MEI não pode ter ISS retido (E0583). Escolha "ISS devido pelo prestador".';
+        if ($regEsp !== '0') $p[] = 'Com regime especial de tributação não pode haver retenção do ISS (E0588).';
+        if ($trib !== '1') $p[] = 'Não há retenção de ISS em imunidade, exportação ou não incidência (E0580).';
+        if ($op === '3' && ($em['reg_ap_trib_sn'] ?: '1') === '1' && (float)$inv['iss_rate'] < 1.8) $p[] = 'Com ISS retido, informe a alíquota do ISS do seu anexo do Simples (mínimo 1,8%) (E0621).';
+    }
+    // valores
+    if ((float)$inv['discount_incond'] > 0 && (float)$inv['discount_incond'] >= $amount) $p[] = 'O desconto incondicionado deve ser menor que o valor do serviço (E0431).';
+    if ((float)$inv['discount_cond'] > 0 && (float)$inv['discount_cond'] >= $amount) $p[] = 'O desconto condicionado deve ser menor que o valor do serviço (E0432).';
+    if ((float)$inv['discount_incond'] + (float)$inv['deductions'] > $amount) $p[] = 'Descontos + deduções não podem passar do valor do serviço (E0427).';
+    $hasDed = (float)$inv['deductions'] > 0 || !empty($x['ded_percentual']);
+    if ($hasDed && $trib !== '1') $p[] = 'Deduções/reduções não são permitidas em imunidade, exportação ou não incidência (E0435).';
+    if ($hasDed && $op === '2') $p[] = 'MEI não pode informar deduções/reduções (E0436).';
+    if ($hasDed && $regEsp !== '0') $p[] = 'Com regime especial de tributação não se informam deduções/reduções (E0438).';
+    if (!empty($x['bm'])) {
+        if ($trib !== '1') $p[] = 'Benefício municipal só vale para operação tributável (E0533).';
+        if ($op === '2') $p[] = 'MEI não pode informar benefício municipal (E0534).';
+        if ($regEsp !== '0') $p[] = 'Com regime especial não se informa benefício municipal (E0535).';
+    }
+    // tributos federais
+    $fed = (float)$inv['pis_amount'] > 0 || (float)$inv['cofins_amount'] > 0 || $inv['inss_withheld'] || $inv['irrf_withheld'] || $inv['csll_withheld'];
+    if ($fed && strlen(only_digits((string)$em['document'])) === 11) $p[] = 'Emitente pessoa física (CPF) não informa tributos federais (E0675): zere PIS, COFINS, CSLL, IRRF e INSS.';
+    if ($fed && $op === '2') $p[] = 'MEI não informa tributos federais (E0676): zere PIS, COFINS, CSLL, IRRF e INSS.';
+    // serviço
+    $ctn = (string)$inv['ctribnac'];
+    if (($inv['ctribmun'] ?? '') === '000') $p[] = 'O código municipal (cTribMun) não pode ser 000 (E0315): deixe em branco.';
+    if ($msg = nfse_nbs_problem((string)($inv['cnbs'] ?? ''), (string)($inv['lc116'] ?? ''))) $p[] = $msg;
+    if ($trib === '3' && empty($inv['cnbs'])) $p[] = 'Na exportação de serviço o código NBS é obrigatório (E0318).';
+    if (in_array($ctn, NFSE_OBRA_CODES, true) && empty($x['obra'])) $p[] = 'Este serviço de construção civil exige o grupo "Obra" (código da obra, CIB ou endereço) (E0370).';
+    if (!in_array($ctn, NFSE_OBRA_CODES, true) && $ctn !== '990101' && !empty($x['obra'])) $p[] = 'O grupo "Obra" só é permitido para os serviços de construção civil da lista (E0372): remova-o.';
+    if ($trib === '2' && !in_array((string)($x['imunidade'] ?? ''), ['1', '2', '3', '4', '5'], true)) $p[] = 'Escolha o tipo de imunidade (E0593: "não informado" não é aceito).';
+    if ($ctn === '990101' && $trib !== '4') $p[] = 'O serviço 99.01.01 exige a situação "Não incidência" (E0532).';
+    return $p;
 }
 
 /* ---------------------------------------------------------------- SIGISS */
@@ -876,34 +928,48 @@ function fh_transmit(int $id, ?int $customerId = null): array
         }
         db_update('fh_invoices', $id, $upd);
     } else {
+        if ($problems = fh_dps_problems($inv, $em)) $fail('Corrija antes de emitir (a Sefin recusaria a nota):', $problems);
         try {
-            $xml = fh_build_dps($inv, $em);
-            nfse_validate_xsd($xml, 'DPS_v1.01.xsd');
             $cert = fh_certificate($em);
-            $signed = nfse_sign($xml, 'infDPS', $cert);
         } catch (NfseException $e) {
             $fail($e->getMessage(), $e->details);
         }
-        db_update('fh_invoices', $id, ['status' => 'processing', 'xml_dps' => $signed, 'error_message' => null, 'updated_at' => now()]);
-        $base = NFSE_ENDPOINTS[$inv['environment'] === 'production' ? 'production' : 'homologation']['sefin'];
-        try {
-            $res = nfse_http('POST', $base . '/nfse', ['dpsXmlGZipB64' => nfse_gzb64($signed)], $cert);
-        } catch (NfseException $e) {
-            $fail($e->getMessage(), $e->details);
-        }
-        $json = $res['json'];
-        $nfseXml = nfse_ungzb64($json['nfseXmlGZipB64'] ?? null);
-        $key = $json['chaveAcesso'] ?? null;
-        if ($res['status'] === 409 || ($res['status'] >= 400 && !$key && preg_match('/E0014|duplic/i', $res['body']))) {
-            $dps = nfse_http('GET', $base . '/dps/' . $inv['dps_id'], null, $cert);
-            $key = $dps['json']['chaveAcesso'] ?? null;
-            if ($key) $nfseXml = nfse_ungzb64(nfse_http('GET', $base . '/nfse/' . $key, null, $cert)['json']['nfseXmlGZipB64'] ?? null);
-        }
-        if (!$key || $res['status'] >= 500) {
+        $base = nfse_endpoint((string)$inv['environment'], 'sefin');
+        $aliq = null; // null = official rules; true/false after an E06xx answer (municipal parametrization)
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                $xml = fh_build_dps($inv, $em, $aliq);
+                nfse_validate_xsd($xml, 'DPS_v1.01.xsd');
+                $signed = nfse_sign($xml, 'infDPS', $cert);
+            } catch (NfseException $e) {
+                $fail($e->getMessage(), $e->details);
+            }
+            db_update('fh_invoices', $id, ['status' => 'processing', 'xml_dps' => $signed, 'error_message' => null, 'updated_at' => now()]);
+            try {
+                $res = nfse_http('POST', $base . '/nfse', ['dpsXmlGZipB64' => nfse_gzb64($signed)], $cert);
+            } catch (NfseException $e) {
+                $fail($e->getMessage(), $e->details);
+            }
+            $json = $res['json'];
+            $nfseXml = nfse_ungzb64($json['nfseXmlGZipB64'] ?? null);
+            $key = $json['chaveAcesso'] ?? null;
+            if ($res['status'] === 409 || ($res['status'] >= 400 && !$key && preg_match('/E0014|duplic/i', $res['body']))) {
+                $dps = nfse_http('GET', $base . '/dps/' . $inv['dps_id'], null, $cert);
+                $key = $dps['json']['chaveAcesso'] ?? null;
+                if ($key) $nfseXml = nfse_ungzb64(nfse_http('GET', $base . '/nfse/' . $key, null, $cert)['json']['nfseXmlGZipB64'] ?? null);
+            }
+            if ($key && $res['status'] < 500) break;
             $errors = nfse_errors($json) ?: ['HTTP ' . $res['status'] . ': ' . mb_substr(strip_tags((string)$res['body']), 0, 300)];
+            // The municipality decides whether the rate goes in the DPS: retry once the way the Sefin asked.
+            if ($attempt === 1 && ($want = nfse_aliq_from_errors($errors)) !== null) {
+                if ($want && (float)$inv['iss_rate'] <= 0) $fail('A nota foi rejeitada pelo Emissor Nacional.', array_merge($errors, ['Como resolver: informe a alíquota do ISS na emissão (o município exige a alíquota neste caso).']));
+                $aliq = $want;
+                log_line('fiscalhub', 'dps retry with pAliq ' . ($want ? 'on' : 'off'), ['id' => $id, 'errors' => $errors]);
+                continue;
+            }
             if (in_array($res['status'], [401, 403], true)) array_unshift($errors, 'Acesso negado: confira se o certificado é do próprio emissor e se o município permite o Emissor Nacional.');
             if (!empty($inv['ctribmun']) && preg_grep('/E0314/', $errors)) $errors[] = 'Como resolver: apague o "Código municipal (cTribMun)" ' . $inv['ctribmun'] . ' na emissão e no cadastro do serviço. Ele é opcional e o seu município não usa esse código no Emissor Nacional (não confunda com o código de serviço do SIGISS).';
-            $fail('A nota foi rejeitada pelo Emissor Nacional.', $errors);
+            $fail('A nota foi rejeitada pelo Emissor Nacional.', array_merge($errors, nfse_error_hints($errors)));
         }
         $number = $nfseXml && preg_match('/<nNFSe>(\d+)<\/nNFSe>/', $nfseXml, $mm) ? $mm[1] : null;
         $vc = $nfseXml && preg_match('/<cVerif>([^<]+)<\/cVerif>/', $nfseXml, $mm) ? $mm[1] : null;
@@ -962,7 +1028,7 @@ function fh_cancel(int $id, int $customerId, int $reason, string $justification)
     nfse_validate_xsd($xml, 'pedRegEvento_v1.01.xsd');
     $cert = fh_certificate($em);
     $signed = nfse_sign($xml, 'infPedReg', $cert);
-    $base = NFSE_ENDPOINTS[$inv['environment'] === 'production' ? 'production' : 'homologation']['sefin'];
+    $base = nfse_endpoint((string)$inv['environment'], 'sefin');
     $res = nfse_http('POST', $base . '/nfse/' . $inv['access_key'] . '/eventos', ['pedidoRegistroEventoXmlGZipB64' => nfse_gzb64($signed)], $cert);
     if ($res['status'] >= 400) throw new NfseException('O cancelamento foi recusado.', nfse_errors($res['json']) ?: ['HTTP ' . $res['status']]);
     db_update('fh_invoices', $id, ['status' => 'canceled', 'cancel_reason' => $justification, 'canceled_at' => now(), 'xml_cancel' => nfse_ungzb64($res['json']['eventoXmlGZipB64'] ?? null), 'updated_at' => now()]);

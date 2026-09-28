@@ -68,7 +68,8 @@ route('GET', '/fh/me', function () {
 
 route('GET', '/fh/lc116', function () {
     fh_customer_guard();
-    json_out(['data' => array_map(fn($r) => ['code' => $r[0], 'name' => $r[1], 'ctribnac' => fh_lc_to_ctribnac($r[0]), 'sigiss' => fh_lc_to_sigiss($r[0])], fh_lc116_list())]);
+    json_out(['data' => array_map(fn($r) => ['code' => $r[0], 'name' => $r[1], 'ctribnac' => fh_lc_to_ctribnac($r[0]), 'sigiss' => fh_lc_to_sigiss($r[0]),
+        'nbs' => array_map(fn($c, $d) => ['code' => (string)$c, 'name' => $d], array_keys($n = nfse_nbs_for_lc($r[0])), $n)], fh_lc116_list())]);
 });
 
 route('GET', '/fh/cep/{cep}', function ($p) {
@@ -283,7 +284,7 @@ route('GET', '/fh/download', function () {
     $rows = fh_invoices_query($cid, $_GET + ['per_page' => 1000], false);
     $rows = array_values(array_filter($rows, fn($r) => $r['status'] !== 'draft'));
     if (count($rows) > 1500) json_error('Selecione até 1.500 notas por download (use o filtro de período).', 422);
-    $what = in_array($_GET['what'] ?? 'both', ['pdf', 'xml', 'both'], true) ? $_GET['what'] : 'both';
+    $what = in_array($_GET['what'] ?? '', ['pdf', 'xml', 'both'], true) ? $_GET['what'] : 'both';
     set_time_limit(300);
     fh_send_file('notas-fiscais-' . date('Y-m-d-His') . '.zip', fh_zip($rows, $what), 'application/zip');
 });

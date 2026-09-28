@@ -265,13 +265,13 @@ function fh_csv(array $rows): string
 {
     $out = fopen('php://temp', 'w+');
     fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, ['Número', 'Série/RPS', 'Situação', 'Emissão', 'Competência', 'Tomador', 'CPF/CNPJ', 'Serviço (LC 116)', 'Valor', 'Desc. incond.', 'Deduções', 'Base ISS', 'Alíq. ISS', 'ISS', 'ISS retido', 'PIS', 'COFINS', 'CSLL', 'IRRF', 'INSS', 'Retenções', 'Líquido', 'Chave de acesso', 'Código verificação', 'Emissor', 'Canal'], ';');
+    fputcsv($out, ['Número', 'Série/RPS', 'Situação', 'Emissão', 'Competência', 'Tomador', 'CPF/CNPJ', 'Serviço (LC 116)', 'Valor', 'Desc. incond.', 'Deduções', 'Base ISS', 'Alíq. ISS', 'ISS', 'ISS retido', 'PIS', 'COFINS', 'CSLL', 'IRRF', 'INSS', 'Retenções', 'Líquido', 'Chave de acesso', 'Código verificação', 'Emissor', 'Canal'], ';', '"', '\\');
     $n = fn($v) => number_format((float)$v, 2, ',', '');
     foreach ($rows as $r) {
         fputcsv($out, [$r['nfse_number'], $r['dps_serie'] . '-' . $r['dps_number'], FH_STATUS[$r['status']] ?? $r['status'], $r['issued_at'] ? date('d/m/Y H:i', strtotime($r['issued_at'])) : '', date('m/Y', strtotime($r['competence_date'])),
             $r['toma_name'], fh_doc_fmt((string)$r['toma_document']), $r['lc116'], $n($r['amount']), $n($r['discount_incond'] ?? 0), $n($r['deductions'] ?? 0), $n($r['base']), $n($r['iss_rate']), $n($r['iss_amount']),
             ($r['iss_retention'] ?? '1') !== '1' ? 'Sim' : 'Não', $n($r['pis_amount']), $n($r['cofins_amount']), $n($r['csll_amount']), $n($r['irrf_amount']), $n($r['inss_amount']), $n($r['withheld_total']), $n($r['net_amount']),
-            $r['access_key'] ? "'" . $r['access_key'] : '', $r['verification_code'] ?? '', $r['emitter_name'] ?? '', ($r['provider'] ?? '') === 'sigiss' ? 'SIGISS Marília' : 'Emissor Nacional'], ';');
+            $r['access_key'] ? "'" . $r['access_key'] : '', $r['verification_code'] ?? '', $r['emitter_name'] ?? '', ($r['provider'] ?? '') === 'sigiss' ? 'SIGISS Marília' : 'Emissor Nacional'], ';', '"', '\\');
     }
     rewind($out);
     return (string)stream_get_contents($out);

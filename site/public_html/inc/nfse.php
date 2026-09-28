@@ -117,8 +117,14 @@ function nfse_taxes_note(array $t): string
 
 function nfse_base(string $which = 'sefin'): string
 {
-    $env = nfse_config()['environment'] === 'production' ? 'production' : 'homologation';
-    return NFSE_ENDPOINTS[$env][$which];
+    return nfse_endpoint(nfse_config()['environment'], $which);
+}
+
+/** Sefin/ADN base URL; inc/config.php may override it with 'nfse_endpoints' (local simulator for tests). */
+function nfse_endpoint(string $environment, string $which = 'sefin'): string
+{
+    $env = $environment === 'production' ? 'production' : 'homologation';
+    return (string)(config('nfse_endpoints')[$env][$which] ?? NFSE_ENDPOINTS[$env][$which]);
 }
 
 /* -------------------------------------------------------------- certificate */
@@ -239,6 +245,122 @@ function nfse_validate_xsd(string $xml, string $schema): void
     if (!$ok) throw new NfseException('O XML não passou na validação do leiaute oficial.', array_slice($errors, 0, 8));
 }
 
+/* ------------------------------------------------ Sefin business rules (DPS) */
+
+/** Rejections that mean "pAliq is required here" / "pAliq must not be sent here" (Anexo I, regras de alíquota). */
+const NFSE_ALIQ_REQUIRED = ['E0619', 'E0621', 'E0628', 'E0640'];
+const NFSE_ALIQ_FORBIDDEN = ['E0600', 'E0602', 'E0604', 'E0612', 'E0617', 'E0625', 'E0631', 'E0635'];
+/** cTribNac that require the "obra" group (E0370); any other code rejects it (E0372). */
+const NFSE_OBRA_CODES = ['070201', '070202', '070401', '070501', '070502', '070601', '070602', '070701', '070801', '071701', '071901', '141403', '141404'];
+
+/**
+ * Effective regApTribSN / regEspTrib for the DPS.
+ * E0166: regApTribSN is mandatory for ME/EPP (default 1 = everything through the Simples) and E0162 forbids it otherwise.
+ * E0172/E0174/E0175: regEspTrib must be 0 for non-taxable operations, for MEI and for ME/EPP paying ISS through the Simples.
+ * @return array{0:string,1:string} [regApTribSN ('' = omit), regEspTrib]
+ */
+function nfse_regime(string $opSimpNac, $regAp, $regEsp, string $tribIssqn): array
+{
+    $regAp = $opSimpNac === '3' ? (in_array((string)$regAp, ['1', '2', '3'], true) ? (string)$regAp : '1') : '';
+    $regEsp = in_array((string)$regEsp, ['0', '1', '2', '3', '4', '5', '6'], true) ? (string)$regEsp : '0';
+    if ($opSimpNac === '2' || $regAp === '1' || $tribIssqn !== '1') $regEsp = '0';
+    return [$regAp, $regEsp];
+}
+
+/**
+ * Whether pAliq goes in the DPS, assuming the municipality of incidence is "Ativo" in the Sistema
+ * Nacional (it parametrizes its own rates). E0617 (não optante), E0600 (MEI), E0602/E0604 (not taxable /
+ * special regime), E0625/E0621 (ME/EPP by the Simples: only when ISS is withheld), E0635 (ME/EPP outside
+ * the Simples). When the Sefin answers otherwise, nfse_aliq_from_errors() tells the caller to flip it once.
+ */
+function nfse_send_aliq(string $opSimpNac, string $regAp, string $regEsp, string $tribIssqn, bool $withheld): bool
+{
+    if ($tribIssqn !== '1' || $regEsp !== '0' || $opSimpNac === '2') return false;
+    return $opSimpNac === '3' && $regAp === '1' && $withheld;
+}
+
+/** true = the Sefin demands pAliq, false = it forbids pAliq, null = the rejection is about something else. */
+function nfse_aliq_from_errors(array $errors): ?bool
+{
+    $text = implode(' ', $errors);
+    foreach (NFSE_ALIQ_REQUIRED as $c) if (strpos($text, $c) !== false) return true;
+    foreach (NFSE_ALIQ_FORBIDDEN as $c) if (strpos($text, $c) !== false) return false;
+    return null;
+}
+
+/**
+ * totTrib group by regime: MEI → indTotTrib=0 (E0710), ME/EPP → pTotTribSN (E0712 forbids indTotTrib),
+ * não optante → pTotTrib federal/estadual/municipal (E0713 forbids indTotTrib and pTotTribSN).
+ * @return array{0:string,1:mixed} ['ind', '0'] | ['sn', pct] | ['p', [fed, est, mun]]
+ */
+function nfse_tot_trib(string $opSimpNac, float $snPct, float $totalPct, float $fedPct, float $munPct): array
+{
+    if ($opSimpNac === '2') return ['ind', '0'];
+    if ($opSimpNac === '3') return ['sn', min(99.99, max(0, $snPct > 0 ? $snPct : $totalPct))];
+    return ['p', [min(99.99, max(0, $fedPct)), 0.0, min(99.99, max(0, $munPct))]];
+}
+
+function nfse_append_tot_trib(DOMDocument $dom, DOMElement $trib, array $spec): void
+{
+    $num = fn($v) => number_format((float)$v, 2, '.', '');
+    $tot = $dom->createElement('totTrib');
+    $trib->appendChild($tot);
+    if ($spec[0] === 'ind') { $tot->appendChild($dom->createElement('indTotTrib', '0')); return; }
+    if ($spec[0] === 'sn') { $tot->appendChild($dom->createElement('pTotTribSN', $num($spec[1]))); return; }
+    $p = $dom->createElement('pTotTrib');
+    $tot->appendChild($p);
+    $p->appendChild($dom->createElement('pTotTribFed', $num($spec[1][0])));
+    $p->appendChild($dom->createElement('pTotTribEst', $num($spec[1][1])));
+    $p->appendChild($dom->createElement('pTotTribMun', $num($spec[1][2])));
+}
+
+/** Friendly "how to fix" lines for rejections whose official text does not say what to change. */
+function nfse_error_hints(array $errors): array
+{
+    $text = implode(' ', $errors);
+    $hints = [
+        'E0116' => 'Informe a inscrição municipal (IM) da empresa no cadastro do emissor.',
+        'E0120' => 'Apague a inscrição municipal (IM) do cadastro do emissor: o município não a usa no Emissor Nacional.',
+        'E0160' => 'A situação no Simples Nacional do cadastro não confere com a Receita: ajuste "Situação no Simples Nacional" no emissor.',
+        'E0010' => 'A série não é aceita para emissão por sistema próprio: use a série 1 (ou a que o seu contador indicar) no cadastro do emissor.',
+        'E0310' => 'Confira o código de tributação nacional (cTribNac) com o seu contador: ele não existe para o município nessa data.',
+        'E0312' => 'Confira o código de tributação nacional (cTribNac) com o seu contador: o município não administra esse serviço.',
+        'E0316' => 'Escolha um código NBS da lista sugerida para o item de serviço (tabela oficial NBS 2.0).',
+        'E0008' => 'O relógio do servidor está adiantado; tente de novo em alguns minutos.',
+    ];
+    $out = [];
+    foreach ($hints as $code => $h) if (strpos($text, $code) !== false) $out[] = 'Como resolver: ' . $h;
+    return $out;
+}
+
+/** Official NBS 2.0 table (gov.br/nfse Anexo B) and its correlation with the LC 116 items (Anexo VIII). */
+function nfse_tables(): array
+{
+    static $t = null;
+    if ($t === null) $t = json_decode((string)@file_get_contents(INC_PATH . '/nfse-schemas/fh_tabelas.json'), true) ?: ['nbs' => [], 'ctribnac' => [], 'lc_nbs' => []];
+    return $t;
+}
+
+/** NBS suggestions for a LC 116 item ("01.07"), as [code => description]. */
+function nfse_nbs_for_lc(string $lc): array
+{
+    $t = nfse_tables();
+    $p = preg_match('/^(\d{1,2})\.?(\d{2})/', $lc, $m) ? str_pad($m[1], 2, '0', STR_PAD_LEFT) . '.' . $m[2] : '';
+    $out = [];
+    foreach ($t['lc_nbs'][$p] ?? [] as $code) $out[$code] = $t['nbs'][$code] ?? '';
+    return $out;
+}
+
+/** Problem text when the NBS code is not in the official table (E0316), or null. */
+function nfse_nbs_problem(string $nbs, string $lc = ''): ?string
+{
+    $t = nfse_tables();
+    if ($nbs === '' || !$t['nbs'] || isset($t['nbs'][$nbs])) return null;
+    $sug = nfse_nbs_for_lc($lc);
+    return 'O código NBS ' . $nbs . ' não existe na tabela oficial NBS 2.0 (a Sefin recusa com E0316).'
+        . ($sug ? ' Para o item ' . $lc . ' use um destes: ' . implode('; ', array_map(fn($c, $d) => $c . ' — ' . mb_substr($d, 0, 70), array_keys($sug), $sug)) . '.' : '');
+}
+
 /* -------------------------------------------------------------- DPS builder */
 
 function nfse_text(string $value, int $max): string
@@ -257,7 +379,7 @@ function nfse_dps_id(array $cfg, string $serie, int $number): string
 /**
  * @param array $inv invoice row (nfse_invoices) + customer fields (toma_*)
  */
-function nfse_build_dps(array $inv, array $cfg): string
+function nfse_build_dps(array $inv, array $cfg, ?bool $aliq = null): string
 {
     $dom = new DOMDocument('1.0', 'UTF-8');
     $dom->formatOutput = false;
@@ -291,10 +413,11 @@ function nfse_build_dps(array $inv, array $cfg): string
     $prest = $el('prest');
     $prest->appendChild($el('CNPJ', $cfg['cnpj']));
     if ($cfg['im'] !== '') $prest->appendChild($el('IM', $cfg['im']));
+    [$regAp, $regEsp] = nfse_regime((string)$cfg['op_simp_nac'], $cfg['reg_ap_trib_sn'] ?? '', $cfg['reg_esp_trib'] ?? '0', '1');
     $reg = $el('regTrib');
     $reg->appendChild($el('opSimpNac', $cfg['op_simp_nac']));
-    if ($cfg['reg_ap_trib_sn'] !== '' && $cfg['op_simp_nac'] === '3') $reg->appendChild($el('regApTribSN', $cfg['reg_ap_trib_sn']));
-    $reg->appendChild($el('regEspTrib', $cfg['reg_esp_trib']));
+    if ($regAp !== '') $reg->appendChild($el('regApTribSN', $regAp));
+    $reg->appendChild($el('regEspTrib', $regEsp));
     $prest->appendChild($reg);
     $inf->appendChild($prest);
 
@@ -304,6 +427,19 @@ function nfse_build_dps(array $inv, array $cfg): string
         $toma = $el('toma');
         $toma->appendChild($el(strlen($doc) === 11 ? 'CPF' : 'CNPJ', $doc));
         $toma->appendChild($el('xNome', nfse_text((string)$inv['toma_name'], 300)));
+        $a = $inv['toma_address'] ?? [];
+        if (strlen(only_digits((string)($a['city_ibge'] ?? ''))) === 7 && strlen(only_digits((string)($a['cep'] ?? ''))) === 8 && trim((string)($a['street'] ?? '')) !== '') {
+            $end = $el('end'); // required for CNPJ takers and for withheld ISS (E0235/E0237)
+            $nac = $el('endNac');
+            $nac->appendChild($el('cMun', only_digits((string)$a['city_ibge'])));
+            $nac->appendChild($el('CEP', only_digits((string)$a['cep'])));
+            $end->appendChild($nac);
+            $end->appendChild($el('xLgr', nfse_text((string)$a['street'], 255)));
+            $end->appendChild($el('nro', nfse_text((string)($a['number'] ?? '') ?: 'S/N', 60)));
+            if (trim((string)($a['complement'] ?? '')) !== '') $end->appendChild($el('xCpl', nfse_text((string)$a['complement'], 156)));
+            $end->appendChild($el('xBairro', nfse_text((string)($a['district'] ?? '') ?: '-', 60)));
+            $toma->appendChild($end);
+        }
         $fone = only_digits((string)($inv['toma_phone'] ?? ''));
         if (strlen($fone) >= 6 && strlen($fone) <= 20) $toma->appendChild($el('fone', $fone));
         if (!empty($inv['toma_email']) && filter_var($inv['toma_email'], FILTER_VALIDATE_EMAIL)) $toma->appendChild($el('email', mb_substr($inv['toma_email'], 0, 80)));
@@ -341,7 +477,7 @@ function nfse_build_dps(array $inv, array $cfg): string
     $tribMun = $el('tribMun');
     $tribMun->appendChild($el('tribISSQN', '1')); // 1 = operação tributável
     $tribMun->appendChild($el('tpRetISSQN', $inv['iss_withheld'] ? '2' : '1'));
-    if ((float)$inv['iss_rate'] > 0) $tribMun->appendChild($el('pAliq', $num($inv['iss_rate'])));
+    if (($aliq ?? nfse_send_aliq((string)$cfg['op_simp_nac'], $regAp, $regEsp, '1', !empty($inv['iss_withheld']))) && (float)$inv['iss_rate'] > 0) $tribMun->appendChild($el('pAliq', $num($inv['iss_rate'])));
     $trib->appendChild($tribMun);
     // federal taxes (only when there is something to declare)
     $pis = (float)($inv['pis_amount'] ?? 0);
@@ -366,23 +502,9 @@ function nfse_build_dps(array $inv, array $cfg): string
         if (!empty($inv['csll_withheld'])) $fed->appendChild($el('vRetCSLL', $num($inv['csll_amount'])));
         $trib->appendChild($fed);
     }
-    $tot = $el('totTrib');
-    if ($cfg['op_simp_nac'] === '2') {
-        $tot->appendChild($el('indTotTrib', '0'));
-    } elseif ($cfg['op_simp_nac'] === '3' && $cfg['simples_percent'] > 0) {
-        $tot->appendChild($el('pTotTribSN', $num($cfg['simples_percent'])));
-    } elseif ((float)$inv['iss_rate'] > 0 || (float)($inv['total_taxes_pct'] ?? 0) > 0) {
-        $fedPct = (float)($inv['pis_rate'] ?? 0) + (float)($inv['cofins_rate'] ?? 0) + (float)($inv['csll_rate'] ?? 0) + (float)($inv['irrf_rate'] ?? 0);
-        $p = $el('pTotTrib');
-        $p->appendChild($el('pTotTribFed', $num($fedPct)));
-        $p->appendChild($el('pTotTribEst', '0.00'));
-        $p->appendChild($el('pTotTribMun', $num($inv['iss_rate'])));
-        $tot->appendChild($p);
-    } else {
-        $tot->appendChild($el('indTotTrib', '0'));
-    }
-    $trib->appendChild($tot);
     $valores->appendChild($trib);
+    $fedPct = (float)($inv['pis_rate'] ?? 0) + (float)($inv['cofins_rate'] ?? 0) + (float)($inv['csll_rate'] ?? 0) + (float)($inv['irrf_rate'] ?? 0);
+    nfse_append_tot_trib($dom, $trib, nfse_tot_trib((string)$cfg['op_simp_nac'], (float)$cfg['simples_percent'], (float)($inv['total_taxes_pct'] ?? 0), $fedPct, (float)$inv['iss_rate']));
     $inf->appendChild($valores);
 
     return $dom->saveXML($dom->documentElement);
@@ -535,31 +657,62 @@ function nfse_transmit(int $id): array
     $cfg = nfse_config();
     if (strlen($cfg['cnpj']) !== 14) throw new AppException('Configure o CNPJ do prestador em Configurações → NFS-e.');
 
+    $fail = function (string $msg, array $details = []) use ($id) {
+        db_update('nfse_invoices', $id, ['status' => 'rejected', 'error_message' => implode("\n", array_merge([$msg], $details)), 'updated_at' => now()]);
+        throw new NfseException($msg, $details);
+    };
+    // Taker address (CEP → street/IBGE via ViaCEP when missing): required for CNPJ takers (E0235).
+    $customer = !empty($inv['customer_id']) ? db_find('customers', (int)$inv['customer_id']) : null;
+    if ($customer) {
+        $customer = customer_address_complete($customer);
+        $inv['toma_address'] = ['cep' => $customer['postal_code'] ?? '', 'street' => $customer['address'] ?? '', 'number' => $customer['address_number'] ?? '',
+            'complement' => $customer['address_complement'] ?? '', 'district' => $customer['district'] ?? '', 'city_ibge' => $customer['city_ibge'] ?? ''];
+    }
+    $a = $inv['toma_address'] ?? [];
+    $hasAddr = strlen(only_digits((string)($a['city_ibge'] ?? ''))) === 7 && strlen(only_digits((string)($a['cep'] ?? ''))) === 8 && trim((string)($a['street'] ?? '')) !== '';
+    $problems = [];
+    $tdoc = only_digits((string)$inv['toma_document']);
+    if ($tdoc !== '' && $tdoc === $cfg['cnpj']) $problems[] = 'O tomador não pode ser a própria empresa (E0202).';
+    if ((strlen($tdoc) === 14 || !empty($inv['iss_withheld'])) && !$hasAddr) $problems[] = 'Complete o endereço do cliente (CEP, rua e número) no cadastro: a Sefin exige o endereço do tomador com CNPJ ou com ISS retido (E0235/E0237).';
+    if (!empty($inv['iss_withheld']) && $tdoc === '') $problems[] = 'Com ISS retido, o cliente precisa de CPF/CNPJ (E0204).';
+    if (!empty($inv['iss_withheld']) && $cfg['op_simp_nac'] === '2') $problems[] = 'MEI não pode ter ISS retido (E0583).';
+    if ($msg = nfse_nbs_problem((string)($inv['nbs_code'] ?? ''))) $problems[] = $msg;
+    if ($problems) $fail('Corrija antes de emitir (a Sefin recusaria a nota):', $problems);
     try {
-        $xml = nfse_build_dps($inv, $cfg);
-        nfse_validate_xsd($xml, 'DPS_v1.01.xsd');
         $certificate = nfse_certificate();
         if ($certificate['info']['expired']) throw new NfseException('O certificado digital está vencido.');
-        $signed = nfse_sign($xml, 'infDPS', $certificate);
     } catch (NfseException $e) {
-        db_update('nfse_invoices', $id, ['status' => 'rejected', 'error_message' => implode("\n", array_merge([$e->getMessage()], $e->details)), 'updated_at' => now()]);
-        throw $e;
+        $fail($e->getMessage(), $e->details);
     }
-    db_update('nfse_invoices', $id, ['status' => 'processing', 'xml_dps' => $signed, 'error_message' => null, 'updated_at' => now()]);
-
-    $res = nfse_http('POST', nfse_base() . '/nfse', ['dpsXmlGZipB64' => nfse_gzb64($signed)], $certificate);
-    $json = $res['json'];
-    $nfseXml = nfse_ungzb64($json['nfseXmlGZipB64'] ?? null);
-    $key = $json['chaveAcesso'] ?? null;
-
-    if ($res['status'] === 409 || ($res['status'] >= 400 && !$key && preg_match('/E0014|duplic/i', $res['body']))) {
-        // DPS already processed earlier (e.g. timeout on our side): recover the access key.
-        $dps = nfse_http('GET', nfse_base() . '/dps/' . $inv['dps_id'], null, $certificate);
-        $key = $dps['json']['chaveAcesso'] ?? null;
-        if ($key) {
-            $q = nfse_http('GET', nfse_base() . '/nfse/' . $key, null, $certificate);
-            $nfseXml = nfse_ungzb64($q['json']['nfseXmlGZipB64'] ?? null);
+    $aliq = null;
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            $xml = nfse_build_dps($inv, $cfg, $aliq);
+            nfse_validate_xsd($xml, 'DPS_v1.01.xsd');
+            $signed = nfse_sign($xml, 'infDPS', $certificate);
+        } catch (NfseException $e) {
+            $fail($e->getMessage(), $e->details);
         }
+        db_update('nfse_invoices', $id, ['status' => 'processing', 'xml_dps' => $signed, 'error_message' => null, 'updated_at' => now()]);
+
+        $res = nfse_http('POST', nfse_base() . '/nfse', ['dpsXmlGZipB64' => nfse_gzb64($signed)], $certificate);
+        $json = $res['json'];
+        $nfseXml = nfse_ungzb64($json['nfseXmlGZipB64'] ?? null);
+        $key = $json['chaveAcesso'] ?? null;
+
+        if ($res['status'] === 409 || ($res['status'] >= 400 && !$key && preg_match('/E0014|duplic/i', $res['body']))) {
+            // DPS already processed earlier (e.g. timeout on our side): recover the access key.
+            $dps = nfse_http('GET', nfse_base() . '/dps/' . $inv['dps_id'], null, $certificate);
+            $key = $dps['json']['chaveAcesso'] ?? null;
+            if ($key) {
+                $q = nfse_http('GET', nfse_base() . '/nfse/' . $key, null, $certificate);
+                $nfseXml = nfse_ungzb64($q['json']['nfseXmlGZipB64'] ?? null);
+            }
+        }
+        if ($key && $res['status'] < 500) break;
+        // pAliq depends on the municipal parametrization: retry once the way the Sefin asked (E06xx).
+        if ($attempt === 1 && ($want = nfse_aliq_from_errors(nfse_errors($json))) !== null && !($want && (float)$inv['iss_rate'] <= 0)) { $aliq = $want; continue; }
+        break;
     }
 
     if ($key && $res['status'] < 500) {
@@ -578,6 +731,7 @@ function nfse_transmit(int $id): array
 
     $errors = nfse_errors($json) ?: ['HTTP ' . $res['status'] . ': ' . mb_substr(strip_tags($res['body']), 0, 300)];
     if ($res['status'] === 403 || $res['status'] === 401) array_unshift($errors, 'Acesso negado (mTLS): confira se o certificado é e-CNPJ válido do prestador e se o município permite emissão pela API nacional.');
+    $errors = array_merge($errors, nfse_error_hints($errors));
     db_update('nfse_invoices', $id, ['status' => 'rejected', 'error_message' => implode("\n", $errors), 'updated_at' => now()]);
     audit('reject', 'nfse', $id, $errors);
     throw new NfseException('A nota foi rejeitada pelo Sistema Nacional NFS-e.', $errors);
