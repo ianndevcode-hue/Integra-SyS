@@ -1348,7 +1348,8 @@ function fh_sigiss_is_pending(array $inv): bool
 function fh_sigiss_adn_message(string $nota, string $rej): array
 {
     return ['A Prefeitura gerou a nota nº ' . $nota . ', mas o Ambiente de Dados Nacional (ADN) a recusou: ela não tem validade fiscal.',
-        ['Resposta do SIGISS: ' . $rej . '.', 'O SIGISS não informa pelo sistema o motivo da recusa do ADN: veja-o no portal marilia.sigiss.com.br, na nota nº ' . $nota . ', e corrija aqui.',
+        ['Resposta do SIGISS: ' . $rej . '.', 'O SIGISS não informa pelo sistema o motivo da recusa do ADN: veja-o no portal marilia.sigiss.com.br, em "Envio ADN" → nota nº ' . $nota . ' → "Ver erro".',
+            'Atenção: quando o cliente (tomador) já está cadastrado no SIGISS, a Prefeitura usa o endereço do cadastro dela, não o enviado pelo Integra. Um erro E1235 citando "xLgr" significa que esse cadastro está sem a rua: complete o cadastro do tomador no portal SIGISS.',
             'Ao clicar em "Emitir nota fiscal" de novo, um novo número de RPS é usado (o anterior ficou com a Prefeitura).']];
 }
 
