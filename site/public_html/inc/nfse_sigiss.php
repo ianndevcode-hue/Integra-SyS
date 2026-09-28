@@ -65,12 +65,14 @@ function sigiss_call(string $operation, array $params, ?string $url = null): DOM
             $body .= "<$name xsi:type=\"{$p['type']}\">" . htmlspecialchars((string)$p['value'], ENT_XML1, 'UTF-8') . "</$name>";
         }
     }
-    $envelope = '<?xml version="1.0" encoding="ISO-8859-1"?>'
+    // UTF-8 end to end: the SIGISS (Reforma Tributária update) rejects Latin-1 text such as "Marília"
+    // in the tomador fields. Invalid byte sequences are dropped so the payload is always valid UTF-8.
+    $body = mb_convert_encoding($body, 'UTF-8', 'UTF-8');
+    $envelope = '<?xml version="1.0" encoding="UTF-8"?>'
         . '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsd="http://www.w3.org/2001/XMLSchema"'
         . ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:tns="urn:sigiss_ws"'
         . ' SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body>'
         . "<tns:$operation>$body</tns:$operation></SOAP-ENV:Body></SOAP-ENV:Envelope>";
-    $envelope = mb_convert_encoding($envelope, 'ISO-8859-1', 'UTF-8');
 
     $endpoint = $url ?: sigiss_config()['url'];
     $attempt = 0;
@@ -79,7 +81,7 @@ function sigiss_call(string $operation, array $params, ?string $url = null): DOM
         $ch = curl_init($endpoint);
         curl_setopt_array($ch, [
             CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 15, CURLOPT_TIMEOUT => 60,
-            CURLOPT_HTTPHEADER => ['Content-Type: text/xml; charset=ISO-8859-1', 'SOAPAction: "urn:sigiss_ws#' . $operation . '"'],
+            CURLOPT_HTTPHEADER => ['Content-Type: text/xml; charset=UTF-8', 'SOAPAction: "urn:sigiss_ws#' . $operation . '"'],
             CURLOPT_POSTFIELDS => $envelope,
         ]);
         $raw = curl_exec($ch);
