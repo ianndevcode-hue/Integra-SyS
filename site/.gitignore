@@ -1,0 +1,12 @@
+# local / secrets
+public_html/inc/config.php
+public_html/storage/*.sqlite*
+public_html/storage/sessions/*
+public_html/storage/logs/*
+!public_html/storage/**/.gitkeep
+dist/
+
+# PHPMailer is committed (no composer on shared hosting)
+!public_html/inc/vendor/
+.claude/
+image.png
