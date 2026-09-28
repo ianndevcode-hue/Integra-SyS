@@ -434,6 +434,11 @@ function nfse_http(string $method, string $url, ?array $body, array $certificate
 
 function nfse_gzb64(string $xml): string
 {
+    // The Sefin reads the encoding from the XML declaration and rejects documents without it
+    // (E1229 "XML não está utilizando codificação UTF8"). The declaration is outside the signed
+    // element, so adding it here keeps the XMLDSig signature valid.
+    $xml = ltrim($xml, "\xEF\xBB\xBF \t\r\n");
+    if (strncmp($xml, '<?xml', 5) !== 0) $xml = '<?xml version="1.0" encoding="UTF-8"?>' . $xml;
     return base64_encode(gzencode($xml));
 }
 
