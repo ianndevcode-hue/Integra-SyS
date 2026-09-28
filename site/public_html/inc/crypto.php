@@ -34,6 +34,12 @@ function decrypt_secret(?string $payload): string
     return $plain === false ? '' : $plain;
 }
 
+/** False when a stored secret exists but can no longer be decrypted (e.g. the app key changed on a reinstall). */
+function secret_readable(?string $payload): bool
+{
+    return !$payload || strpos($payload, 'enc:') !== 0 || decrypt_secret($payload) !== '';
+}
+
 function mask_secret(string $secret): string
 {
     $len = strlen($secret);

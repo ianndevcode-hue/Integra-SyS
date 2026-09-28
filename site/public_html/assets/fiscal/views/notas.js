@@ -3,6 +3,36 @@ import { api, $, $$, esc, icon, money, date, datetime, badge, dataTable, modal, 
 import { fh, provName, fmtDoc } from '/assets/fiscal/state.js';
 
 const monthStart = () => today().slice(0, 8) + '01';
+const VOIDABLE = ['draft', 'rejected', 'processing'];
+const reloadList = () => window.dispatchEvent(new Event('fh:reload'));
+
+/** Inutilização: the server first checks with the Sefin/SIGISS that the number never became a note, then voids it for good. */
+function voidModal(rows, after = reloadList) {
+  const one = rows.length === 1;
+  const label = (r) => `DPS/RPS ${r.dps_serie ? r.dps_serie + '-' : ''}${r.dps_number}`;
+  formModal({
+    title: one ? 'Inutilizar ' + label(rows[0]) : `Inutilizar ${rows.length} números`, size: 'sm', submitLabel: one ? 'Inutilizar número' : `Inutilizar ${rows.length}`,
+    intro: `<div class="alert alert-warning" style="margin:0"><b>A inutilização não pode ser desfeita.</b> O número ${one ? esc(label(rows[0])) : 'de cada nota selecionada'} fica registrado como não utilizado e nunca mais será emitido.
+      <br><small>Antes de inutilizar, consultamos a Sefin Nacional ou a Prefeitura (SIGISS) para confirmar que o número não virou nota. Se virou, a nota é recuperada no sistema e você poderá cancelá-la.</small></div>
+      ${one ? '' : `<p class="small muted" style="margin:10px 0 0">${rows.map((r) => esc(label(r) + ' · ' + (r.toma_name || ''))).join('<br>')}</p>`}`,
+    fields: [{ name: 'justification', label: 'Justificativa (mín. 15 caracteres)', type: 'textarea', rows: 3, required: true, span: 2, placeholder: 'Ex.: nota rejeitada por dados incorretos, emitida novamente em outro número.' }],
+    onSubmit: async (d) => {
+      if ((d.justification || '').trim().length < 15) throw new Error('A justificativa precisa ter pelo menos 15 caracteres.');
+      const errors = [];
+      let ok = 0;
+      for (const r of rows) {
+        try { await api(`/fh/invoices/${r.id}/void`, { method: 'POST', body: d }); ok++; } catch (err) { errors.push({ r, msg: err.message || String(err) }); }
+      }
+      if (ok) toast(ok === 1 ? 'Número inutilizado.' : `${ok} números inutilizados.`);
+      if (errors.length) {
+        after(); // a number that did become a note was recovered: show it
+        if (one) throw new Error(errors[0].msg);
+        return void modal({ title: 'Não inutilizados', body: `<ul class="list">${errors.map((e) => `<li><div class="grow"><b>${esc(label(e.r))}</b><small>${esc(e.msg)}</small></div></li>`).join('')}</ul>` });
+      }
+      after();
+    },
+  });
+}
 
 export async function render(el, ctx) {
   if (ctx.id) return detail(el, ctx.id);
@@ -21,7 +51,7 @@ export async function render(el, ctx) {
   const table = dataTable($('[data-table]', el), {
     endpoint: '/fh/invoices', query: { emitter_id: scope }, perPage: 25, sort: 'issued_at', dir: 'desc', searchPlaceholder: 'Buscar por cliente, número, CPF/CNPJ ou descrição...',
     filters: [
-      { name: 'status', label: 'Todas as situações', options: Object.entries({ authorized: 'Emitidas', draft: 'Rascunhos', rejected: 'Rejeitadas', canceled: 'Canceladas', processing: 'Transmitindo' }).map(([value, label]) => ({ value, label })), value: ctx.query.status || '' },
+      { name: 'status', label: 'Todas as situações', options: Object.entries({ authorized: 'Emitidas', draft: 'Rascunhos', rejected: 'Rejeitadas', canceled: 'Canceladas', voided: 'Inutilizadas', processing: 'Transmitindo' }).map(([value, label]) => ({ value, label })), value: ctx.query.status || '' },
       { name: 'from', type: 'date', label: 'De', value: ctx.query.from || monthStart() },
       { name: 'to', type: 'date', label: 'Até', value: ctx.query.to || today() },
     ],
@@ -36,8 +66,9 @@ export async function render(el, ctx) {
     ],
     actions: (r) => [
       r.status !== 'draft' && { label: 'PDF', icon: 'download', iconOnly: true, onClick: () => window.open(downloadUrl(`/fh/invoices/${r.id}/pdf`), '_blank') },
-      ['authorized', 'canceled'].includes(r.status) && { label: 'XML', icon: 'code', iconOnly: true, onClick: () => { location.href = downloadUrl(`/fh/invoices/${r.id}/xml`); } },
+      ['authorized', 'canceled', 'voided'].includes(r.status) && { label: 'XML', icon: 'code', iconOnly: true, onClick: () => { location.href = downloadUrl(`/fh/invoices/${r.id}/xml`); } },
       ['draft', 'rejected'].includes(r.status) && { label: 'Emitir', icon: 'send', success: true, onClick: () => { location.hash = '#/emitir/' + r.id; } },
+      VOIDABLE.includes(r.status) && { label: 'Inutilizar', icon: 'ban', iconOnly: true, onClick: () => voidModal([r]) },
     ],
     onRowClick: (r) => { location.hash = '#/notas/' + r.id; },
     bulk: [
@@ -45,6 +76,11 @@ export async function render(el, ctx) {
       { label: 'Só PDF', action: async (ids) => { location.href = downloadUrl('/fh/download', { ids: ids.join(','), what: 'pdf' }); } },
       { label: 'Só XML', action: async (ids) => { location.href = downloadUrl('/fh/download', { ids: ids.join(','), what: 'xml' }); } },
       { label: 'Emitir rascunhos selecionados', icon: 'send', action: async (ids) => transmitMany(ids) },
+      { label: 'Inutilizar selecionadas', icon: 'ban', action: async (ids) => {
+        const rows = table.state.rows.filter((r) => ids.includes(r.id) && VOIDABLE.includes(r.status));
+        if (!rows.length) { toast('Selecione rascunhos, notas rejeitadas ou travadas em "Transmitindo".', 'error'); return; }
+        voidModal(rows);
+      } },
       { label: 'Planilha', action: async (ids) => { location.href = downloadUrl('/fh/export.csv', { ids: ids.join(',') }); } },
     ],
     totals: (rows, res) => (res.sum ? `<div class="totals"><span>${res.total} nota(s) no filtro</span><span>Emitido: <b>${money(res.sum.amount)}</b></span><span>ISS: <b>${money(res.sum.iss)}</b></span><span>Líquido: <b>${money(res.sum.net)}</b></span></div>` : ''),
@@ -81,17 +117,21 @@ async function detail(el, id) {
       <p>${badge('fh_invoice_status', n.status)} ${n.environment !== 'production' ? '<span class="badge yellow">produção restrita — sem valor fiscal</span>' : ''} · ${esc(provName(n.provider))} · ${esc(em.trade_name || em.legal_name || '')}</p></div>
       <div class="page-actions">
         ${n.status !== 'draft' ? `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/pdf`)}" target="_blank">${icon('download')} PDF</a>` : `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/pdf`)}" target="_blank">${icon('eye')} Prévia</a>`}
-        ${['authorized', 'canceled'].includes(n.status) ? `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/xml`)}">${icon('code')} XML</a>` : ''}
+        ${['authorized', 'canceled', 'voided'].includes(n.status) ? `<a class="btn" href="${downloadUrl(`/fh/invoices/${n.id}/xml`)}">${icon('code')} XML</a>` : ''}
         ${n.print_url ? `<a class="btn" href="${esc(n.print_url)}" target="_blank" rel="noopener">${icon('external')} Oficial</a>` : ''}
         ${n.status === 'authorized' ? `<button class="btn" data-email>${icon('mail')} Enviar</button>` : ''}
         ${['draft', 'rejected'].includes(n.status) ? `<a class="btn btn-primary" href="#/emitir/${n.id}">${icon('send')} Corrigir e emitir</a>` : ''}
         <button class="btn" data-dup>${icon('copy')} Duplicar</button>
         ${n.status === 'authorized' && n.provider === 'nacional' ? `<button class="btn" data-subst>${icon('refresh')} Substituir</button>` : ''}
         ${n.status === 'authorized' ? `<button class="btn btn-danger" data-cancel>${icon('x')} Cancelar</button>` : ''}
-        ${['draft', 'rejected'].includes(n.status) ? `<button class="btn btn-danger btn-icon" data-del title="Excluir">${icon('trash')}</button>` : ''}
+        ${VOIDABLE.includes(n.status) ? `<button class="btn btn-danger" data-void>${icon('ban')} Inutilizar</button>` : ''}
+        ${['draft', 'rejected'].includes(n.status) ? `<button class="btn btn-danger btn-icon" data-del title="Excluir rascunho">${icon('trash')}</button>` : ''}
       </div></div>
     ${n.status === 'rejected' && n.error_message ? `<div class="alert alert-danger"><b>Motivo da rejeição:</b><br>${esc(n.error_message).replace(/\n/g, '<br>')}</div>` : ''}
     ${n.status === 'canceled' ? `<div class="alert alert-warning">Cancelada em ${datetime(n.canceled_at)}${n.cancel_reason ? ' — ' + esc(n.cancel_reason) : ''}.</div>` : ''}
+    ${n.status === 'voided' ? `<div class="alert alert-warning"><b>Número inutilizado</b> em ${datetime(n.canceled_at)}${x.inutilizacao?.usuario ? ' por ' + esc(x.inutilizacao.usuario) : ''} — ${esc(n.cancel_reason || '')}.
+      ${(x.inutilizacao?.verificacao || []).map((v) => `<br><small>${icon('check')} ${esc(v)}</small>`).join('')}
+      <br><small class="muted">O DPS/RPS ${esc(n.dps_serie + '-' + n.dps_number)} não será usado novamente. Para emitir este serviço, use "Duplicar" (a cópia recebe um novo número).</small></div>` : ''}
     <div class="grid g3">
       <section class="card"><div class="card-head"><h3>Identificação</h3></div><div class="card-body"><dl class="kv">
         <dt>Número</dt><dd>${esc(n.nfse_number || '—')}</dd><dt>Emissão</dt><dd>${n.issued_at ? datetime(n.issued_at) : '—'}</dd><dt>Competência</dt><dd>${date(n.competence_date)}</dd>
@@ -131,5 +171,6 @@ async function detail(el, id) {
       { name: 'descricao', label: 'Descrição do motivo', type: 'textarea', rows: 2, span: 2 }],
     onSubmit: async (d) => { const r = await api(`/fh/invoices/${n.id}/substitute`, { method: 'POST', body: d }); location.hash = '#/emitir/' + r.id; },
   }));
+  $('[data-void]', el)?.addEventListener('click', () => voidModal([n], reload));
   $('[data-del]', el)?.addEventListener('click', async () => { if (!await confirmDialog('Excluir este rascunho?', { danger: true })) return; await api('/fh/invoices/' + n.id, { method: 'DELETE' }).catch(toastError); location.hash = '#/notas'; });
 }

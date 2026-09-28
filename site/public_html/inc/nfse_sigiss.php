@@ -107,6 +107,7 @@ function sigiss_call(string $operation, array $params, ?string $url = null): DOM
         if ($raw === false) throw new NfseException('Falha de conexão com o SIGISS da prefeitura: ' . $err);
         break;
     }
+    $GLOBALS['sigiss_last_response'] = ['op' => $operation, 'status' => $status, 'body' => mb_substr((string)$raw, 0, 3000)];
     $dom = new DOMDocument();
     if (!@$dom->loadXML($raw)) {
         log_line('nfse', 'sigiss invalid response', ['op' => $operation, 'status' => $status, 'body' => mb_substr($raw, 0, 500)]);
@@ -124,10 +125,16 @@ function sigiss_value(DOMXPath $xp, string $name): string
     return $n ? sigiss_fix_text(trim($n->textContent)) : '';
 }
 
+/** Last raw SIGISS answer (for the logs; it never contains the password). */
+function sigiss_last_response(): ?array
+{
+    return $GLOBALS['sigiss_last_response'] ?? null;
+}
+
 function sigiss_errors(DOMXPath $xp): array
 {
     $out = [];
-    foreach ($xp->query('//*[local-name()="DescricaoErro"]') as $n) {
+    foreach ($xp->query('//*[local-name()="DescricaoErro" or local-name()="Mensagem" or local-name()="MensagemErro" or local-name()="Erro"]') as $n) {
         $t = sigiss_fix_text(trim($n->textContent));
         if ($t !== '') $out[] = $t;
     }
@@ -165,6 +172,18 @@ function sigiss_test_credentials(): array
     ]);
     $authFail = sigiss_auth_errors(sigiss_errors($xp));
     return ['ok' => !$authFail, 'messages' => $authFail ?: ['Acesso ao SIGISS de Marília confirmado.'], 'sample_note' => sigiss_value($xp, 'nota')];
+}
+
+/** "Como resolver" lines for the most common SIGISS refusals. */
+function sigiss_hints(array $errors): array
+{
+    $t = mb_strtolower(implode(' ', $errors));
+    $out = [];
+    if (preg_match('/senha/u', $t) && !str_contains($t, 'não pode mais ser lida')) $out[] = 'Como resolver: a senha do SIGISS enviada não confere. Use a mesma senha com que a empresa entra no portal marilia.sigiss.com.br (com o CCM). Corrija em "Empresa e certificado" → Senha do SIGISS e clique em "Testar conexão" antes de emitir de novo.';
+    if (preg_match('/\bccm\b|inscri[cç][aã]o municipal/u', $t)) $out[] = 'Como resolver: confira a inscrição municipal (CCM) da empresa em "Empresa e certificado" — use só os números, como aparece no portal SIGISS.';
+    if (preg_match('/servi[cç]o|atividade/u', $t)) $out[] = 'Como resolver: confira o "Código do serviço no SIGISS" (ex.: 106) no cadastro do serviço — ele precisa estar liberado para o CCM da empresa.';
+    if (preg_match('/\bnbs\b/u', $t)) $out[] = 'Como resolver: escolha um código NBS da lista sugerida para o item de serviço.';
+    return $out;
 }
 
 /* ------------------------------------------------------------- addresses */

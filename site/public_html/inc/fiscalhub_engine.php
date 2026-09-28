@@ -150,7 +150,8 @@ function fh_emitter_public(array $em): array
     $out = $em;
     unset($out['cert_pfx'], $out['cert_password'], $out['sigiss_password']);
     $out['has_certificate'] = !empty($em['cert_pfx']);
-    $out['has_sigiss_password'] = !empty($em['sigiss_password']);
+    $out['has_sigiss_password'] = !empty($em['sigiss_password']) && secret_readable($em['sigiss_password']);
+    $out['has_certificate'] = $out['has_certificate'] && secret_readable($em['cert_pfx']);
     $out['cert_expired'] = $em['cert_valid_to'] && $em['cert_valid_to'] < today();
     $out['cert_days_left'] = $em['cert_valid_to'] ? (int)floor((strtotime($em['cert_valid_to']) - strtotime(today())) / 86400) : null;
     $out['ready'] = fh_emitter_problems($em) === [];
@@ -166,9 +167,11 @@ function fh_emitter_problems(array $em): array
     if ($em['provider'] === 'sigiss') {
         if (!only_digits((string)$em['im'])) $p[] = 'Informe a inscrição municipal (CCM) de Marília.';
         if (empty($em['sigiss_password'])) $p[] = 'Informe a senha do SIGISS (a mesma do portal da prefeitura).';
+        elseif (!secret_readable($em['sigiss_password'])) $p[] = FH_SECRET_LOST_SIGISS;
     } else {
         if (strlen((string)$em['city_ibge']) !== 7) $p[] = 'Informe o município (código IBGE) do emissor — preencha pelo CEP.';
         if (empty($em['cert_pfx'])) $p[] = 'Envie o certificado digital A1 (.pfx) do emissor.';
+        elseif (!secret_readable($em['cert_pfx']) || !secret_readable($em['cert_password'] ?? null)) $p[] = FH_SECRET_LOST_CERT;
         elseif ($em['cert_valid_to'] && $em['cert_valid_to'] < today()) $p[] = 'O certificado digital está vencido.';
     }
     return $p;
@@ -229,8 +232,12 @@ function fh_emitter_certificate(array $em, string $pfxB64, string $password): ar
     return ['info' => $info, 'warning' => $warn];
 }
 
+const FH_SECRET_LOST_SIGISS = 'A senha do SIGISS salva não pode mais ser lida (a chave de segurança do site mudou na reinstalação). Digite a senha do SIGISS de novo em Empresa e certificado.';
+const FH_SECRET_LOST_CERT = 'O certificado digital salvo não pode mais ser lido (a chave de segurança do site mudou na reinstalação). Envie o arquivo .pfx e a senha de novo em Empresa e certificado.';
+
 function fh_certificate(array $em): array
 {
+    if (!empty($em['cert_pfx']) && (!secret_readable($em['cert_pfx']) || !secret_readable($em['cert_password'] ?? null))) throw new NfseException(FH_SECRET_LOST_CERT);
     $pfx = base64_decode(decrypt_secret($em['cert_pfx'] ?? ''), true);
     if (!$pfx) throw new NfseException('Certificado digital A1 não enviado. Abra Empresa → Certificado digital.');
     $c = nfse_read_pfx($pfx, decrypt_secret($em['cert_password'] ?? ''));
@@ -240,6 +247,7 @@ function fh_certificate(array $em): array
 
 function fh_sigiss_cfg(array $em): array
 {
+    if (!secret_readable($em['sigiss_password'] ?? null)) throw new NfseException(FH_SECRET_LOST_SIGISS);
     return ['url' => (string)config('fh_sigiss_url', SIGISS_DEFAULT_URL), 'ccm' => only_digits((string)$em['im']), 'cnpj' => $em['document'], 'password' => decrypt_secret($em['sigiss_password'] ?? '')];
 }
 
@@ -892,6 +900,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
     $inv = db_find('fh_invoices', $id);
     if (!$inv || ($customerId && (int)$inv['customer_id'] !== $customerId)) throw new AppException('Nota não encontrada.');
     if (in_array($inv['status'], ['authorized', 'canceled'], true)) throw new AppException('Esta nota já foi emitida.');
+    if ($inv['status'] === 'voided') throw new AppException('Este número foi inutilizado e não pode mais ser emitido. Duplique a nota para emitir com um novo número.');
     if ($inv['status'] === 'processing' && strtotime((string)$inv['updated_at']) > time() - 90) throw new AppException('Esta nota já está sendo transmitida. Aguarde alguns segundos.');
     fh_require_emit((int)$inv['customer_id']);
     $em = db_find('fh_emitters', (int)$inv['emitter_id']);
@@ -913,8 +922,15 @@ function fh_transmit(int $id, ?int $customerId = null): array
         } catch (NfseException $e) {
             $fail($e->getMessage(), $e->details);
         }
-        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)sigiss_value($xp, 'Nota') > 0)) $fail('A Prefeitura de Marília (SIGISS) recusou a nota.', sigiss_errors($xp) ?: ['O SIGISS não informou o motivo.']);
         $number = sigiss_value($xp, 'Nota');
+        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)) {
+            $errors = sigiss_errors($xp);
+            log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'response' => sigiss_last_response()]);
+            if (!fh_sigiss_note_is_rps($inv, $em, (int)$number)) {
+                if (!$errors) $errors = fh_sigiss_diagnose($inv, $em, $xp);
+                $fail('A Prefeitura de Marília (SIGISS) recusou a nota.', array_merge($errors, sigiss_hints($errors)));
+            }
+        }
         $upd = ['status' => 'authorized', 'nfse_number' => $number, 'print_url' => sigiss_value($xp, 'LinkImpressao') ?: null, 'verification_code' => sigiss_value($xp, 'autenticidade') ?: null,
             'issued_at' => now(), 'error_message' => null, 'updated_at' => now()];
         try {
@@ -1047,6 +1063,123 @@ function fh_substitute(int $id, int $customerId, string $motivo, string $descric
     $in = fh_invoice_to_input($inv);
     $in['extra'] = $x + ['subst' => ['chave' => $inv['access_key'], 'motivo' => $motivo, 'descricao' => $descricao, 'invoice_id' => $inv['id']]];
     return fh_invoice_save($em, $in, null, 'substitute');
+}
+
+/** True when SIGISS note $n exists and was generated from this invoice's RPS (a refusal that still carried a note number). */
+function fh_sigiss_note_is_rps(array $inv, array $em, int $n): bool
+{
+    if ($n <= 0) return false;
+    try {
+        $cfg = fh_sigiss_cfg($em);
+        $q = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
+            'Nota' => ['type' => 'xsd:int', 'value' => $n]], $cfg['url']);
+        return ($rps = only_digits(sigiss_value($q, 'num_rps'))) !== '' && (int)$rps === (int)$inv['dps_number'];
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/** The SIGISS refused without saying why: test the login and report what we can find out. */
+function fh_sigiss_diagnose(array $inv, array $em, DOMXPath $xp): array
+{
+    $cfg = fh_sigiss_cfg($em);
+    if ($cfg['password'] === '') return [FH_SECRET_LOST_SIGISS];
+    try {
+        $q = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
+            'Nota' => ['type' => 'xsd:int', 'value' => 1]], $cfg['url']);
+        if ($auth = sigiss_auth_errors(sigiss_errors($q))) return $auth;
+    } catch (NfseException $e) {
+        return [$e->getMessage()];
+    }
+    return ['O SIGISS recusou sem informar o motivo (Resultado ' . (sigiss_value($xp, 'Resultado') ?: 'vazio') . '). Testamos o acesso (CCM ' . $cfg['ccm'] . ', CNPJ e senha) e ele está correto.',
+        'Confira com a Prefeitura se o código de serviço ' . ($inv['sigiss_code'] ?: '—') . ' está liberado para o CCM da empresa e se a alíquota ' . number_format((float)$inv['iss_rate'], 2, ',', '') . '% confere com o cadastro municipal.'];
+}
+
+/**
+ * Inutilização of a DPS/RPS number that never became an NFS-e (draft, rejected or a transmission that got stuck).
+ * Neither the Sefin Nacional nor the SIGISS has an inutilização service (the NFS-e number is assigned by the authority),
+ * so the number is first checked with the authority itself: if it did become a note, the note is recovered instead
+ * (and must be canceled); otherwise it is permanently voided here, with the justification and the verification made.
+ */
+function fh_void(int $id, int $customerId, string $justification, ?string $by = null): array
+{
+    $inv = fh_invoice($customerId, $id);
+    if (in_array($inv['status'], ['authorized', 'canceled'], true)) throw new AppException('Esta nota já foi emitida. Para anulá-la, use "Cancelar".');
+    if ($inv['status'] === 'voided') throw new AppException('Este número já foi inutilizado.');
+    if ($inv['status'] === 'processing' && strtotime((string)$inv['updated_at']) > time() - 90) throw new AppException('Esta nota está sendo transmitida agora. Aguarde alguns segundos e tente de novo.');
+    $justification = nfse_text($justification, 255);
+    if (mb_strlen($justification) < 15) throw new AppException('A justificativa precisa ter pelo menos 15 caracteres.');
+    $em = db_find('fh_emitters', (int)$inv['emitter_id']);
+    $proof = [];
+    if (!empty($inv['xml_dps'])) $proof[] = fh_void_check_nacional($inv, $em);
+    elseif ($inv['provider'] === 'nacional') $proof[] = 'DPS nunca transmitida à Sefin Nacional.';
+    if ($inv['provider'] === 'sigiss') $proof[] = fh_void_check_sigiss($inv, $em);
+    $x = json_decode((string)$inv['extra'], true) ?: [];
+    $x['inutilizacao'] = ['data' => now(), 'justificativa' => $justification, 'verificacao' => $proof, 'usuario' => $by];
+    $done = db_exec("UPDATE fh_invoices SET status = 'voided', cancel_reason = ?, canceled_at = ?, extra = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ?",
+        [$justification, now(), json_encode($x, JSON_UNESCAPED_UNICODE), now(), $id, $inv['status']]);
+    if (!$done) throw new AppException('A situação da nota mudou enquanto ela era inutilizada. Atualize a página.');
+    log_line('fiscalhub', 'dps voided', ['id' => $id, 'dps' => $inv['dps_serie'] . '-' . $inv['dps_number'], 'proof' => $proof]);
+    return db_find('fh_invoices', $id);
+}
+
+/** Asks the Sefin whether the DPS became an NFS-e; if it did, the note is recovered and the inutilização is refused. */
+function fh_void_check_nacional(array $inv, array $em): string
+{
+    try {
+        $cert = fh_certificate($em);
+    } catch (NfseException $e) {
+        throw new NfseException('Para inutilizar, precisamos confirmar com a Sefin Nacional que esta DPS não virou nota, e isso exige o certificado digital da empresa.', [$e->getMessage()]);
+    }
+    $base = nfse_endpoint((string)$inv['environment'], 'sefin');
+    $res = nfse_http('GET', $base . '/dps/' . $inv['dps_id'], null, $cert);
+    $key = $res['json']['chaveAcesso'] ?? null;
+    if ($res['status'] === 404 && !$key) return 'Sefin Nacional consultada em ' . date('d/m/Y H:i') . ': a DPS ' . $inv['dps_id'] . ' não gerou NFS-e.';
+    if (!$key) throw new NfseException('Não foi possível confirmar com a Sefin Nacional se esta DPS virou nota. Nada foi inutilizado; tente novamente em instantes.', nfse_errors($res['json']) ?: ['HTTP ' . $res['status']]);
+    $xml = nfse_ungzb64(nfse_http('GET', $base . '/nfse/' . $key, null, $cert)['json']['nfseXmlGZipB64'] ?? null);
+    $number = $xml && preg_match('/<nNFSe>(\d+)<\/nNFSe>/', $xml, $mm) ? $mm[1] : null;
+    $vc = $xml && preg_match('/<cVerif>([^<]+)<\/cVerif>/', $xml, $mm) ? $mm[1] : null;
+    fh_void_recovered($inv, ['access_key' => $key, 'nfse_number' => $number, 'verification_code' => $vc, 'xml_nfse' => $xml]);
+}
+
+/** SIGISS: looks at the notes issued after the last one we know, comparing their RPS with this one. */
+function fh_void_check_sigiss(array $inv, array $em): string
+{
+    $cfg = fh_sigiss_cfg($em);
+    $nums = array_map('intval', array_column(db_all("SELECT nfse_number FROM fh_invoices WHERE emitter_id = ? AND provider = 'sigiss' AND nfse_number IS NOT NULL AND status IN ('authorized','canceled')", [$em['id']]), 'nfse_number'));
+    $last = $nums ? max($nums) : 0;
+    if (!$last) return 'SIGISS: não há notas anteriores desta empresa no sistema para comparar; a Prefeitura responde a emissão na hora e não autorizou este RPS.';
+    $checked = [];
+    for ($n = $last + 1; $n <= $last + 20; $n++) {
+        $xp = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
+            'Nota' => ['type' => 'xsd:int', 'value' => $n]], $cfg['url']);
+        $errors = sigiss_errors($xp);
+        if ($auth = sigiss_auth_errors($errors)) throw new NfseException('O SIGISS recusou a consulta, então não foi possível confirmar que este RPS não virou nota. Nada foi inutilizado.', $auth);
+        $rps = only_digits(sigiss_value($xp, 'num_rps'));
+        if ($rps === '' && sigiss_value($xp, 'nota') === '') {
+            // no note with this number (end of the list); any other kind of error means we could not check
+            if ($errors && !preg_grep('/\bnota\b|inexist|n[aã]o encontrad|n[aã]o localizad/iu', $errors)) throw new NfseException('O SIGISS não respondeu a consulta como esperado. Nada foi inutilizado; tente novamente em instantes.', $errors);
+            break;
+        }
+        $checked[] = $n;
+        $serie = trim(sigiss_value($xp, 'serie_rps'));
+        if ((int)$rps === (int)$inv['dps_number'] && ($serie === '' || strcasecmp($serie, (string)$inv['dps_serie']) === 0)) {
+            fh_void_recovered($inv, ['nfse_number' => (string)$n, 'access_key' => only_digits(sigiss_value($xp, 'chaveacesso')) ?: null,
+                'verification_code' => sigiss_value($xp, 'autenticidade') ?: null, 'print_url' => sigiss_value($xp, 'LinkImpressao') ?: null]);
+        }
+    }
+    return 'SIGISS consultado em ' . date('d/m/Y H:i') . ': ' . ($checked ? 'notas ' . $checked[0] . (count($checked) > 1 ? ' a ' . end($checked) : '') . ' conferidas, nenhuma é do RPS ' . $inv['dps_number'] : 'nenhuma nota emitida após a nº ' . $last) . '.';
+}
+
+/** The number did become a note at the authority: store it as authorized and refuse the inutilização. */
+function fh_void_recovered(array $inv, array $upd): void
+{
+    db_update('fh_invoices', (int)$inv['id'], $upd + ['status' => 'authorized', 'issued_at' => $inv['issued_at'] ?: now(), 'error_message' => null, 'updated_at' => now()]);
+    $fresh = db_find('fh_invoices', (int)$inv['id']);
+    fh_finance_hook('fhf_on_invoice_authorized', $fresh);
+    log_line('fiscalhub', 'void refused: note exists', ['id' => $inv['id'], 'nfse' => $fresh['nfse_number']]);
+    throw new AppException('Não inutilizado: este número já virou a NFS-e' . ($fresh['nfse_number'] ? ' nº ' . $fresh['nfse_number'] : '') . ' na ' . ($inv['provider'] === 'sigiss' ? 'Prefeitura (SIGISS)' : 'Sefin Nacional')
+        . '. Recuperamos a nota no sistema; se ela não deveria existir, abra-a e use "Cancelar".');
 }
 
 /** Rebuild the form input of an invoice (duplicate / substitute / recurring). */

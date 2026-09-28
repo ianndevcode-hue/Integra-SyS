@@ -248,6 +248,11 @@ route('POST', '/fh/invoices/{id}/cancel', function ($p) {
     $in = input();
     json_out(fh_invoice_public(fh_cancel((int)$p['id'], $cid, (int)($in['reason'] ?? 0), (string)($in['justification'] ?? ''))));
 });
+route('POST', '/fh/invoices/{id}/void', function ($p) {
+    [$cid, , $c] = fh_guard();
+    if (!throttle('fh-void-' . $cid, 30, 3600)) json_error('Muitas inutilizações seguidas. Aguarde.', 429);
+    json_out(fh_invoice_public(fh_void((int)$p['id'], $cid, (string)(input()['justification'] ?? ''), $c['email'] ?? $c['name'] ?? null)));
+});
 route('POST', '/fh/invoices/{id}/substitute', function ($p) {
     [$cid] = fh_guard();
     $in = input();

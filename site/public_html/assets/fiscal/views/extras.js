@@ -17,7 +17,7 @@ export async function render(el, ctx) {
 const INTERVALS = { 1: 'Mensal', 2: 'Bimestral', 3: 'Trimestral', 6: 'Semestral', 12: 'Anual' };
 const daysTo = (d) => Math.round((new Date(d + 'T12:00:00') - new Date(today() + 'T12:00:00')) / 86400000);
 const whenLabel = (d) => { const n = daysTo(d); return n < 0 ? `atrasada ${-n} dia(s)` : n === 0 ? 'hoje' : n === 1 ? 'amanhã' : `em ${n} dias`; };
-const INV_BADGE = { authorized: ['green', 'Emitida'], rejected: ['red', 'Rejeitada'], canceled: ['', 'Cancelada'], draft: ['yellow', 'Rascunho'], processing: ['blue', 'Transmitindo'] };
+const INV_BADGE = { authorized: ['green', 'Emitida'], rejected: ['red', 'Rejeitada'], canceled: ['', 'Cancelada'], draft: ['yellow', 'Rascunho'], processing: ['blue', 'Transmitindo'], voided: ['', 'Inutilizada'] };
 const PLACEHOLDERS = [['{mes_ano}', 'mês/ano'], ['{mes}', 'mês'], ['{ano}', 'ano'], ['{mm/aaaa}', 'mm/aaaa'], ['{data_vencimento}', 'data de vencimento']];
 
 async function recurring(el, em) {

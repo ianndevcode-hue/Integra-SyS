@@ -9,7 +9,7 @@ declare(strict_types=1);
 
 require_once INC_PATH . '/pdf.php';
 
-const FH_STATUS = ['draft' => 'Rascunho', 'processing' => 'Transmitindo', 'authorized' => 'Emitida', 'rejected' => 'Rejeitada', 'canceled' => 'Cancelada'];
+const FH_STATUS = ['draft' => 'Rascunho', 'processing' => 'Transmitindo', 'authorized' => 'Emitida', 'rejected' => 'Rejeitada', 'canceled' => 'Cancelada', 'voided' => 'Inutilizada'];
 
 function fh_doc_fmt(string $d): string
 {
@@ -73,6 +73,7 @@ function fh_danfse_data(array $inv, array $em): array
     if (!empty($x['info']['pedido'])) $info[] = 'Pedido: ' . $x['info']['pedido'];
     if (!empty($x['info']['doc_ref'])) $info[] = 'Documento de referência: ' . $x['info']['doc_ref'];
     if (!empty($x['info']['complementar'])) $info[] = $x['info']['complementar'];
+    if ($inv['status'] === 'voided') $info[] = 'NÚMERO DE DPS/RPS ' . $inv['dps_serie'] . '-' . $inv['dps_number'] . ' INUTILIZADO EM ' . date('d/m/Y H:i', strtotime((string)$inv['canceled_at'])) . ' - ' . $inv['cancel_reason'] . ' - DOCUMENTO SEM VALOR FISCAL';
     $homolog = $inv['environment'] !== 'production';
     if ($homolog) $info[] = 'NFS-e EMITIDA EM AMBIENTE DE PRODUÇÃO RESTRITA (HOMOLOGAÇÃO) - SEM VALOR FISCAL';
     $wm = $inv['status'] === 'canceled' ? 'CANCELADA' : ($inv['status'] !== 'authorized' ? mb_strtoupper(FH_STATUS[$inv['status']] ?? 'RASCUNHO') : ($homolog ? 'SEM VALOR FISCAL' : null));
@@ -133,6 +134,12 @@ function fh_xml(array $inv, array $em): string
         $add($v, $k, number_format((float)$inv[$col], 2, '.', ''));
     }
     $add($v, 'issRetido', $inv['iss_retention'] !== '1' ? 'sim' : 'nao');
+    $iu = (json_decode((string)$inv['extra'], true) ?: [])['inutilizacao'] ?? null;
+    if ($inv['status'] === 'voided' && $iu) {
+        $u = $root->appendChild($dom->createElement('Inutilizacao'));
+        foreach (['serieDps' => $inv['dps_serie'], 'numeroDps' => $inv['dps_number'], 'idDps' => $inv['dps_id'], 'data' => $iu['data'] ?? $inv['canceled_at'], 'justificativa' => $iu['justificativa'] ?? $inv['cancel_reason'], 'usuario' => $iu['usuario'] ?? ''] as $k => $val) $add($u, $k, $val);
+        foreach ((array)($iu['verificacao'] ?? []) as $line) $add($u, 'verificacao', $line);
+    }
     return $dom->saveXML();
 }
 
@@ -204,7 +211,7 @@ function fh_zip(array $rows, string $what): string
         if (!$inv || in_array($inv['status'], ['draft'], true)) continue;
         $em = $emitters[$inv['emitter_id']] ??= db_find('fh_emitters', (int)$inv['emitter_id']);
         $folder = count(array_unique(array_column($rows, 'emitter_id'))) > 1 ? preg_replace('/[^A-Za-z0-9]+/', '-', strip_accents(mb_substr($em['legal_name'], 0, 30))) . '/' : '';
-        $sub = $inv['status'] === 'canceled' ? 'canceladas/' : ($inv['status'] === 'rejected' ? 'rejeitadas/' : '');
+        $sub = ['canceled' => 'canceladas/', 'rejected' => 'rejeitadas/', 'voided' => 'inutilizadas/'][$inv['status']] ?? '';
         $base = $folder . $sub . fh_file_base($inv);
         if ($what !== 'xml') $files[$base . '.pdf'] = fh_pdf($inv, $em);
         if ($what !== 'pdf' && $inv['status'] !== 'rejected') $files[$base . '.xml'] = fh_xml($inv, $em);
