@@ -148,6 +148,27 @@ function serviceForm(em, s, lc, onDone) {
     ],
     onReady: (form) => {
       form.elements.lc116.setAttribute('list', 'fh-lc-list');
+      // SIGISS: read the service codes the prefeitura already accepted in this company's own notes
+      const sc = form.elements.sigiss_code;
+      if (sc) {
+        const box = document.createElement('div');
+        box.className = 'fh-rec-ph';
+        box.innerHTML = `<button type="button" class="fh-chip" data-sig-find>${icon('search')} Buscar os códigos da empresa no SIGISS</button>`;
+        sc.closest('.field').appendChild(box);
+        box.addEventListener('click', async (e) => {
+          const pick = e.target.closest('[data-code]');
+          if (pick) { sc.value = pick.dataset.code; toast('Código ' + pick.dataset.code + ' aplicado.'); return; }
+          const b = e.target.closest('[data-sig-find]');
+          if (!b) return;
+          b.classList.add('loading');
+          try {
+            const r = await api(`/fh/emitters/${em.id}/sigiss-codes`, { query: { refresh: 1 } });
+            box.innerHTML = r.data.length
+              ? `<span class="help" style="width:100%">Códigos aceitos pela Prefeitura nas notas da empresa (clique para usar):</span>${r.data.map((c) => `<button type="button" class="fh-chip ${c.code === sc.value ? 'on' : ''}" data-code="${esc(c.code)}" title="${esc(c.desc)}">${esc(c.code)}${c.rate ? ' · ' + esc(c.rate) + '%' : ''}</button>`).join('')}`
+              : '<span class="help">Nenhuma nota desta empresa no SIGISS para consultar. Veja o código da atividade no portal marilia.sigiss.com.br ou com o contador.</span>';
+          } catch (err) { toastError(err); b.classList.remove('loading'); }
+        });
+      }
       form.elements.lc116.addEventListener('change', () => {
         const code = form.elements.lc116.value.split('—')[0].trim();
         const it = lc.find((i) => i.code === code || i.code.replace(/^0/, '') === code);

@@ -127,6 +127,13 @@ route('DELETE', '/fh/emitters/{id}/certificate', function ($p) {
     db_update('fh_emitters', (int)fh_owned_emitter($cid, $p['id'])['id'], ['cert_pfx' => null, 'cert_password' => null, 'cert_subject' => null, 'cert_valid_to' => null, 'updated_at' => now()]);
     json_out(['ok' => true]);
 });
+route('GET', '/fh/emitters/{id}/sigiss-codes', function ($p) {
+    [$cid] = fh_guard();
+    if (!throttle('fh-sigcodes-' . $cid, 20, 3600)) json_error('Muitas consultas seguidas. Aguarde alguns minutos.', 429);
+    $em = fh_owned_emitter($cid, $p['id']);
+    if ($em['provider'] !== 'sigiss') json_error('Disponível para empresas que emitem pelo SIGISS.', 422);
+    json_out(['data' => fh_sigiss_known_codes($em, !empty($_GET['refresh']))]);
+});
 route('POST', '/fh/emitters/{id}/test', function ($p) {
     [$cid] = fh_guard();
     if (!throttle('fh-test-' . $cid, 20, 3600)) json_error('Muitos testes seguidos. Aguarde alguns minutos.', 429);

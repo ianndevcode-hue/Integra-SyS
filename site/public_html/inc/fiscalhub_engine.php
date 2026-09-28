@@ -926,27 +926,43 @@ function fh_transmit(int $id, ?int $customerId = null): array
         // "Código do Serviço não encontrado / não cadastrado": try once the other writing of the same
         // LC 116 item (106 <-> 0106). A refusal never creates a note, so the second call is safe.
         $code = only_digits((string)$inv['sigiss_code']);
-        $alt = strlen($code) === 3 ? '0' . $code : (strlen($code) === 4 && $code[0] === '0' ? substr($code, 1) : null);
-        if ($alt && !(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/c[oó]digo do servi[cç]o/iu', sigiss_errors($xp))) {
-            try {
-                $fields['servico'] = ['xsd:int', $alt];
-                $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
-                if (sigiss_value($xp2, 'Resultado') === '1' && (int)sigiss_value($xp2, 'Nota') > 0) {
-                    [$xp, $number] = [$xp2, sigiss_value($xp2, 'Nota')];
-                    db_update('fh_invoices', $id, ['sigiss_code' => $alt]);
-                    if ($inv['service_id']) db_exec('UPDATE fh_services SET sigiss_code = ? WHERE id = ? AND emitter_id = ?', [$alt, $inv['service_id'], $em['id']]);
-                    log_line('fiscalhub', 'sigiss service code format fixed', ['id' => $id, 'from' => $code, 'to' => $alt]);
+        $codeRefused = !(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/c[oó]digo do servi[cç]o/iu', sigiss_errors($xp));
+        $knownCodes = [];
+        if ($codeRefused && $code !== '') {
+            // the same LC 116 item written the way the prefeitura accepted it in this company's own notes, else 106 <-> 0106
+            try { $knownCodes = fh_sigiss_known_codes($em); } catch (Throwable $e) { log_line('fiscalhub', 'sigiss known codes failed', ['id' => $id, 'error' => $e->getMessage()]); }
+            $same = array_values(array_filter(array_column($knownCodes, 'code'), fn($c) => $c !== $code && ltrim($c, '0') === ltrim($code, '0')));
+            $alt = $same[0] ?? (strlen($code) === 3 ? '0' . $code : (strlen($code) === 4 && $code[0] === '0' ? substr($code, 1) : null));
+            if ($alt) {
+                try {
+                    $fields['servico'] = ['xsd:int', $alt];
+                    $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
+                    if (sigiss_value($xp2, 'Resultado') === '1' && (int)sigiss_value($xp2, 'Nota') > 0) {
+                        [$xp, $number] = [$xp2, sigiss_value($xp2, 'Nota')];
+                        db_update('fh_invoices', $id, ['sigiss_code' => $alt]);
+                        if ($inv['service_id']) db_exec('UPDATE fh_services SET sigiss_code = ? WHERE id = ? AND emitter_id = ?', [$alt, $inv['service_id'], $em['id']]);
+                        log_line('fiscalhub', 'sigiss service code format fixed', ['id' => $id, 'from' => $code, 'to' => $alt]);
+                    }
+                } catch (NfseException $e) {
+                    log_line('fiscalhub', 'sigiss alt service code failed', ['id' => $id, 'error' => $e->getMessage()]);
                 }
-            } catch (NfseException $e) {
-                log_line('fiscalhub', 'sigiss alt service code failed', ['id' => $id, 'error' => $e->getMessage()]);
             }
         }
         if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)) {
             $errors = sigiss_errors($xp);
             log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'response' => sigiss_last_response()]);
             if (!fh_sigiss_note_is_rps($inv, $em, (int)$number)) {
-                if (!$errors) $errors = fh_sigiss_diagnose($inv, $em, $xp);
-                $fail('A Prefeitura de Marília (SIGISS) recusou a nota.', array_merge($errors, sigiss_hints($errors)));
+                // hints only from what the SIGISS itself said (never from our own diagnosis text)
+                $hints = $errors ? sigiss_hints($errors) : [];
+                if (!$errors) {
+                    [$errors, $fromSigiss] = fh_sigiss_diagnose($inv, $em, $xp);
+                    if ($fromSigiss) $hints = sigiss_hints($errors);
+                }
+                if ($codeRefused && $knownCodes) {
+                    $list = implode('; ', array_map(fn($k) => $k['code'] . ($k['desc'] !== '' ? ' (nota nº ' . $k['nota'] . ': "' . $k['desc'] . '")' : ''), array_slice($knownCodes, 0, 5)));
+                    array_unshift($hints, 'Códigos de serviço que a Prefeitura já aceitou nas notas desta empresa no SIGISS: ' . $list . '. Use o que corresponde a este serviço em Serviços → "Código do serviço no SIGISS".');
+                }
+                $fail('A Prefeitura de Marília (SIGISS) recusou a nota.', array_merge($errors, $hints));
             }
         }
         $upd = ['status' => 'authorized', 'nfse_number' => $number, 'print_url' => sigiss_value($xp, 'LinkImpressao') ?: null, 'verification_code' => sigiss_value($xp, 'autenticidade') ?: null,
@@ -1097,20 +1113,66 @@ function fh_sigiss_note_is_rps(array $inv, array $em, int $n): bool
     }
 }
 
+/**
+ * Service codes the prefeitura accepted in this company's own notes: finds the last note number with a
+ * binary search (ConsultarNotaPrestador, read-only) and reads "servico" from the most recent notes.
+ * Cached for 12 hours. @return list of ['code' => '106', 'desc' => '...', 'nota' => 123, 'rate' => '2,00']
+ */
+function fh_sigiss_known_codes(array $em, bool $refresh = false): array
+{
+    $key = 'fh_sigiss_codes_' . (int)$em['id'];
+    $cached = json_decode((string)setting($key, ''), true);
+    if (!$refresh && $cached && ($cached['at'] ?? 0) > time() - 43200) return $cached['codes'];
+    $cfg = fh_sigiss_cfg($em);
+    $get = function (int $n) use ($cfg): ?DOMXPath {
+        $xp = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
+            'Nota' => ['type' => 'xsd:int', 'value' => $n]], $cfg['url']);
+        if ($auth = sigiss_auth_errors(sigiss_errors($xp))) throw new NfseException('O SIGISS recusou o acesso.', $auth);
+        return sigiss_value($xp, 'nota') !== '' || sigiss_value($xp, 'servico') !== '' ? $xp : null;
+    };
+    $known = array_map('intval', array_column(db_all("SELECT nfse_number FROM fh_invoices WHERE emitter_id = ? AND provider = 'sigiss' AND nfse_number IS NOT NULL", [$em['id']]), 'nfse_number'));
+    $lo = $known ? max($known) : 0;
+    if (!$lo && $get(1)) $lo = 1;
+    $codes = [];
+    if ($lo || $get(1)) {
+        $lo = max(1, $lo);
+        $hi = $lo * 2;
+        for ($i = 0; $i < 14 && $get($hi); $i++) { $lo = $hi; $hi *= 2; } // exponential search, then binary
+        while ($hi - $lo > 1) { $mid = intdiv($lo + $hi, 2); if ($get($mid)) $lo = $mid; else $hi = $mid; }
+        for ($n = $lo; $n > max(0, $lo - 12); $n--) {
+            if (!($xp = $get($n))) continue;
+            $c = only_digits(sigiss_value($xp, 'servico'));
+            if ($c === '' || isset($codes[$c])) continue;
+            $codes[$c] = ['code' => $c, 'desc' => mb_substr(trim(strtok(sigiss_value($xp, 'descricao'), "\n") ?: ''), 0, 90), 'nota' => $n, 'rate' => sigiss_value($xp, 'aliquota_atividade')];
+        }
+    }
+    $codes = array_values($codes);
+    set_setting($key, json_encode(['at' => time(), 'codes' => $codes], JSON_UNESCAPED_UNICODE));
+    return $codes;
+}
+
 /** The SIGISS refused without saying why: test the login and report what we can find out. */
 function fh_sigiss_diagnose(array $inv, array $em, DOMXPath $xp): array
 {
     $cfg = fh_sigiss_cfg($em);
-    if ($cfg['password'] === '') return [FH_SECRET_LOST_SIGISS];
+    if ($cfg['password'] === '') return [[FH_SECRET_LOST_SIGISS], false];
     try {
         $q = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
             'Nota' => ['type' => 'xsd:int', 'value' => 1]], $cfg['url']);
-        if ($auth = sigiss_auth_errors(sigiss_errors($q))) return $auth;
+        if ($auth = sigiss_auth_errors(sigiss_errors($q))) return [$auth, true];
     } catch (NfseException $e) {
-        return [$e->getMessage()];
+        return [[$e->getMessage()], false];
     }
-    return ['O SIGISS recusou sem informar o motivo (Resultado ' . (sigiss_value($xp, 'Resultado') ?: 'vazio') . '). Testamos o acesso (CCM ' . $cfg['ccm'] . ', CNPJ e senha) e ele está correto.',
-        'Confira com a Prefeitura se o código de serviço ' . ($inv['sigiss_code'] ?: '—') . ' está liberado para o CCM da empresa e se a alíquota ' . number_format((float)$inv['iss_rate'], 2, ',', '') . '% confere com o cadastro municipal.'];
+    $out = sigiss_value($xp, 'Resultado') === ''
+        ? ['O SIGISS devolveu uma resposta vazia, sem aceitar nem recusar a nota (instabilidade do sistema da Prefeitura). Testamos o acesso (CCM ' . $cfg['ccm'] . ', CNPJ e senha) e ele está correto: tente emitir de novo em alguns minutos.']
+        : ['O SIGISS recusou sem informar o motivo (Resultado ' . sigiss_value($xp, 'Resultado') . '). Testamos o acesso (CCM ' . $cfg['ccm'] . ', CNPJ e senha) e ele está correto.',
+            'Confira com a Prefeitura se o código de serviço ' . ($inv['sigiss_code'] ?: '—') . ' está liberado para o CCM da empresa e se a alíquota ' . number_format((float)$inv['iss_rate'], 2, ',', '') . '% confere com o cadastro municipal.'];
+    try {
+        $known = fh_sigiss_known_codes($em);
+        $code = only_digits((string)$inv['sigiss_code']);
+        if ($known && !in_array($code, array_column($known, 'code'), true)) $out[] = 'Atenção: o código de serviço ' . $code . ' não aparece nas notas já emitidas pela empresa no SIGISS (códigos usados: ' . implode(', ', array_column(array_slice($known, 0, 5), 'code')) . '). Se a nota continuar sem resposta, confira o código em Serviços.';
+    } catch (Throwable $e) { /* optional */ }
+    return [$out, false];
 }
 
 /**
