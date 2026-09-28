@@ -353,7 +353,10 @@ export async function render(el, ctx) {
     btn.classList.add('loading');
     try {
       const r = await save(true);
-      if (r.error) {
+      if (r.error && r.invoice?.extra?.sigiss_adn?.pending) {
+        await fh.refresh();
+        waiting(r.invoice);
+      } else if (r.error) {
         showError(r.error, r.details);
       } else {
         await fh.refresh();
@@ -366,6 +369,14 @@ export async function render(el, ctx) {
   const showError = (msg, details = []) => {
     modal({ title: 'A nota não foi autorizada', body: `<div class="alert alert-danger" style="margin:0"><b>${esc(msg)}</b>${details?.length ? `<ul style="margin:8px 0 0;padding-left:18px">${details.map((d) => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}</div><p class="small muted">A nota ficou salva (você a encontra em Notas fiscais). Corrija o que foi indicado e clique em "Emitir nota fiscal" novamente — a mesma numeração é reaproveitada.</p>`,
       footer: '<button class="btn btn-primary" data-close>Corrigir</button>' });
+  };
+  // SIGISS: the prefeitura generated the note and the Ambiente de Dados Nacional still has to approve it
+  const waiting = (n) => {
+    const nota = n.extra.sigiss_adn.nota;
+    const m = modal({ title: 'Nota gerada — aguardando aprovação', body: `<div class="fh-success">${icon('clock')}<h3>NFS-e nº ${esc(nota)}</h3><p class="muted">${esc(n.toma_name)} · ${money(n.amount)}</p></div>
+      <div class="alert alert-info" style="margin:0">A Prefeitura de Marília gerou a nota e a enviou ao <b>Ambiente de Dados Nacional (ADN)</b>, que ainda precisa aprovar. Isso costuma levar alguns minutos.<br><b>Não emita de novo.</b> A nota passa a "Emitida" sozinha quando o ADN aprovar (conferimos de hora em hora); você também pode usar "Atualizar situação" na nota.</div>`,
+      footer: `<a class="btn" href="#/emitir?t=${Date.now()}" data-close>Emitir outra</a><a class="btn btn-primary" href="#/notas/${n.id}" data-close>Acompanhar a nota</a>` });
+    return m;
   };
   const success = (n) => {
     const m = modal({ title: 'Nota fiscal emitida!', body: `<div class="fh-success">${icon('check')}<h3>NFS-e nº ${esc(n.nfse_number || '—')}</h3><p class="muted">${esc(n.toma_name)} · ${money(n.amount)}${n.toma_email && Number(E.auto_email) && n.environment === 'production' ? `<br>Enviada para ${esc(n.toma_email)}` : ''}</p>
