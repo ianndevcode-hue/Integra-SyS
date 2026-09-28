@@ -902,6 +902,12 @@ function fh_transmit(int $id, ?int $customerId = null): array
     if (!$inv || ($customerId && (int)$inv['customer_id'] !== $customerId)) throw new AppException('Nota não encontrada.');
     if (in_array($inv['status'], ['authorized', 'canceled'], true)) throw new AppException('Esta nota já foi emitida.');
     if ($inv['status'] === 'voided') throw new AppException('Este número foi inutilizado e não pode mais ser emitido. Duplique a nota para emitir com um novo número.');
+    if (fh_sigiss_is_pending($inv)) {
+        // the prefeitura already generated this note and it waits for the ADN: re-sending would create a second one
+        $inv = fh_sigiss_sync($id, (int)$inv['customer_id']);
+        if ($inv['status'] === 'authorized') return $inv;
+        if (fh_sigiss_is_pending($inv)) throw new AppException('A nota nº ' . ((json_decode((string)$inv['extra'], true) ?: [])['sigiss_adn']['nota'] ?? '') . ' já foi gerada pela Prefeitura e aguarda a aprovação do Ambiente de Dados Nacional (ADN). Não é preciso emitir de novo: acompanhe em Notas fiscais ("Atualizar situação").');
+    }
     if ($inv['status'] === 'processing' && strtotime((string)$inv['updated_at']) > time() - 90) throw new AppException('Esta nota já está sendo transmitida. Aguarde alguns segundos.');
     fh_require_emit((int)$inv['customer_id']);
     $em = db_find('fh_emitters', (int)$inv['emitter_id']);
@@ -1003,10 +1009,17 @@ function fh_transmit(int $id, ?int $customerId = null): array
             $q = null;
             log_line('fiscalhub', 'sigiss consult after emit failed', ['id' => $id, 'error' => $e->getMessage()]);
         }
-        if ($q && ($rej = fh_sigiss_adn_rejected($q))) {
+        $adn = $q ? fh_sigiss_adn_state($q) : null;
+        if ($adn && $adn['state'] === 'rejected') {
             // the prefeitura generated the note but the national environment (ADN) refused it: it has no fiscal value
-            fh_sigiss_mark_adn($id, (string)$number, $rej);
-            $fail(...fh_sigiss_adn_message((string)$number, $rej));
+            fh_sigiss_mark_adn($id, (string)$number, $adn['msg']);
+            $fail(...fh_sigiss_adn_message((string)$number, $adn['msg']));
+        }
+        if ($adn) {
+            // generated and waiting for the ADN: followed by "Atualizar situação" and the cron, never re-sent
+            fh_sigiss_mark_pending($id, (string)$number, $adn['msg']);
+            throw new NfseException('A Prefeitura gerou a nota nº ' . $number . ' e ela aguarda a aprovação do Ambiente de Dados Nacional (ADN).',
+                ['Resposta do SIGISS: ' . $adn['msg'] . '.', 'Não emita de novo: acompanhe em Notas fiscais → nota nº ' . $number . ' (botão "Atualizar situação"). Ela passa a "Emitida" quando o ADN aprovar; também conferimos automaticamente de hora em hora.']);
         }
         db_update('fh_invoices', $id, $upd);
     } else {
@@ -1097,7 +1110,9 @@ function fh_cancel(int $id, int $customerId, int $reason, string $justification)
                 $status = trim(sigiss_value($q, 'StatusNFe') . ' ' . sigiss_value($q, 'situacao'));
                 log_line('fiscalhub', 'sigiss note status after cancel refusal', ['id' => $id, 'status' => $status, 'response' => sigiss_last_response()]);
             } catch (Throwable $e) { /* optional */ }
-            if (isset($q) && ($rej = fh_sigiss_adn_rejected($q))) {
+            $adn = isset($q) ? fh_sigiss_adn_state($q) : null;
+            if ($adn && $adn['state'] === 'pending') throw new NfseException('A nota nº ' . $inv['nfse_number'] . ' ainda aguarda a aprovação do Ambiente de Dados Nacional (ADN) e não pode ser cancelada agora.', ['Resposta do SIGISS: ' . $adn['msg'] . '.', 'Tente cancelar depois que ela for aprovada.']);
+            if ($adn && ($rej = $adn['msg'])) {
                 fh_sigiss_mark_adn($id, (string)$inv['nfse_number'], $rej);
                 fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
                 throw new NfseException('Não há o que cancelar: a nota nº ' . $inv['nfse_number'] . ' foi recusada pelo Ambiente de Dados Nacional (ADN) e não tem validade fiscal.',
@@ -1245,12 +1260,25 @@ function fh_sigiss_diagnose(array $inv, array $em, DOMXPath $xp): array
     return [$out, false];
 }
 
-/** "Nota recusada pela ADN": the SIGISS generated the note but the Ambiente de Dados Nacional refused it. */
-function fh_sigiss_adn_rejected(DOMXPath $q): ?string
+/**
+ * State of a SIGISS note in the Ambiente de Dados Nacional, from a ConsultarNotaPrestador answer:
+ * null = the note is there (approved), else ['state' => 'rejected'|'pending', 'msg' => SIGISS text].
+ * "Nota recusada pela ADN" = refused (no fiscal value); "Nota aguardando aprovacao da ADN" = still in the queue.
+ */
+function fh_sigiss_adn_state(DOMXPath $q): ?array
 {
     if (sigiss_value($q, 'nota') !== '' || sigiss_value($q, 'num_rps') !== '') return null;
-    $hit = preg_grep('/recusad|rejeitad|\bADN\b/iu', sigiss_errors($q));
-    return $hit ? implode(' ', $hit) : null;
+    $errors = sigiss_errors($q);
+    if ($hit = preg_grep('/recusad|rejeitad|n[aã]o autorizad|denegad/iu', $errors)) return ['state' => 'rejected', 'msg' => implode(' ', $hit)];
+    if ($hit = preg_grep('/aguard|pendente|em an[aá]lise|processamento|fila/iu', $errors)) return ['state' => 'pending', 'msg' => implode(' ', $hit)];
+    return null;
+}
+
+/** Invoice waiting for the ADN (also recognizes notes stored as rejected by the first version, whose message said "aguardando"). */
+function fh_sigiss_is_pending(array $inv): bool
+{
+    $a = (json_decode((string)$inv['extra'], true) ?: [])['sigiss_adn'] ?? null;
+    return $a && !empty($a['nota']) && (!empty($a['pending']) || ($inv['status'] === 'rejected' && preg_match('/aguard/iu', (string)($a['msg'] ?? ''))));
 }
 
 function fh_sigiss_adn_message(string $nota, string $rej): array
@@ -1272,11 +1300,22 @@ function fh_sigiss_mark_adn(int $id, string $nota, string $rej): void
     log_line('fiscalhub', 'sigiss note refused by ADN', ['id' => $id, 'nota' => $nota, 'msg' => $rej]);
 }
 
+/** The note exists at the prefeitura and waits for the ADN: never re-send it (that would create a second note). */
+function fh_sigiss_mark_pending(int $id, string $nota, string $msg): void
+{
+    $inv = db_find('fh_invoices', $id);
+    $x = json_decode((string)$inv['extra'], true) ?: [];
+    $x['sigiss_adn'] = ['nota' => $nota, 'rps' => (int)$inv['dps_number'], 'msg' => $msg, 'pending' => true, 'at' => $x['sigiss_adn']['at'] ?? now()];
+    db_update('fh_invoices', $id, ['status' => 'processing', 'nfse_number' => $nota, 'extra' => json_encode($x, JSON_UNESCAPED_UNICODE),
+        'error_message' => 'A Prefeitura gerou a nota nº ' . $nota . ' e ela aguarda a aprovação do Ambiente de Dados Nacional (ADN). Resposta do SIGISS: ' . $msg . '.', 'issued_at' => $inv['issued_at'] ?: now(), 'updated_at' => now()]);
+    log_line('fiscalhub', 'sigiss note waiting for ADN', ['id' => $id, 'nota' => $nota, 'msg' => $msg]);
+}
+
 /** An invoice whose RPS number was already consumed by the prefeitura (ADN refusal) gets a new one before re-emitting. */
 function fh_sigiss_renumber_if_used(array $inv, array $em): array
 {
     $x = json_decode((string)$inv['extra'], true) ?: [];
-    if (empty($x['sigiss_adn']['rps']) || (int)$x['sigiss_adn']['rps'] !== (int)$inv['dps_number']) return $inv;
+    if (empty($x['sigiss_adn']['rps']) || (int)$x['sigiss_adn']['rps'] !== (int)$inv['dps_number'] || fh_sigiss_is_pending($inv)) return $inv;
     db_transaction(function () use ($inv, $em) {
         $fresh = db_find('fh_emitters', (int)$em['id']);
         $n = max((int)$fresh['next_number'], 1 + (int)db_value('SELECT COALESCE(MAX(dps_number), 0) FROM fh_invoices WHERE emitter_id = ? AND environment = ? AND dps_serie = ?', [$em['id'], $inv['environment'], $inv['dps_serie']]));
@@ -1287,27 +1326,58 @@ function fh_sigiss_renumber_if_used(array $inv, array $em): array
     return db_find('fh_invoices', (int)$inv['id']);
 }
 
-/** Re-read an issued SIGISS note at the prefeitura (the ADN may refuse it minutes later). */
+/** Re-read a SIGISS note at the prefeitura: approved, still waiting, refused by the ADN or canceled. */
 function fh_sigiss_sync(int $id, int $customerId): array
 {
     $inv = fh_invoice($customerId, $id);
-    if ($inv['provider'] !== 'sigiss' || $inv['status'] !== 'authorized' || !$inv['nfse_number']) return $inv;
+    $pending = fh_sigiss_is_pending($inv);
+    if ($inv['provider'] !== 'sigiss' || !($pending || ($inv['status'] === 'authorized' && $inv['nfse_number']))) return $inv;
+    $x = json_decode((string)$inv['extra'], true) ?: [];
+    $nota = (string)($inv['nfse_number'] ?: ($x['sigiss_adn']['nota'] ?? ''));
     $em = db_find('fh_emitters', (int)$inv['emitter_id']);
     $cfg = fh_sigiss_cfg($em);
     $q = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
-        'Nota' => ['type' => 'xsd:int', 'value' => (int)$inv['nfse_number']]], $cfg['url']);
+        'Nota' => ['type' => 'xsd:int', 'value' => (int)$nota]], $cfg['url']);
     if ($auth = sigiss_auth_errors(sigiss_errors($q))) throw new NfseException('O SIGISS recusou o acesso.', $auth);
-    if ($rej = fh_sigiss_adn_rejected($q)) {
-        fh_sigiss_mark_adn($id, (string)$inv['nfse_number'], $rej);
-        fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
+    $adn = fh_sigiss_adn_state($q);
+    if ($adn && $adn['state'] === 'rejected') {
+        $was = $inv['status'];
+        fh_sigiss_mark_adn($id, $nota, $adn['msg']);
+        if ($was === 'authorized') fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
+    } elseif ($adn) {
+        fh_sigiss_mark_pending($id, $nota, $adn['msg']);
     } elseif (preg_match('/cancel/i', sigiss_value($q, 'StatusNFe') . ' ' . sigiss_value($q, 'situacao'))) {
-        db_update('fh_invoices', $id, ['status' => 'canceled', 'canceled_at' => now(), 'cancel_reason' => 'Cancelada na Prefeitura (SIGISS)', 'updated_at' => now()]);
+        db_update('fh_invoices', $id, ['status' => 'canceled', 'nfse_number' => $nota, 'canceled_at' => now(), 'cancel_reason' => 'Cancelada na Prefeitura (SIGISS)', 'updated_at' => now()]);
         fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
-    } else {
+    } elseif (sigiss_value($q, 'nota') !== '' || sigiss_value($q, 'num_rps') !== '') {
         $upd = array_filter(['access_key' => only_digits(sigiss_value($q, 'chaveacesso')) ?: null, 'verification_code' => sigiss_value($q, 'autenticidade') ?: null, 'print_url' => sigiss_value($q, 'LinkImpressao') ?: null]);
+        if ($pending) {
+            // approved by the ADN: the note is now valid
+            unset($x['sigiss_adn']);
+            $upd += ['status' => 'authorized', 'nfse_number' => $nota, 'error_message' => null, 'extra' => json_encode($x, JSON_UNESCAPED_UNICODE), 'issued_at' => $inv['issued_at'] ?: now()];
+        }
         db_update('fh_invoices', $id, $upd + ['updated_at' => now()]);
+        if ($pending) {
+            $fresh = db_find('fh_invoices', $id);
+            fh_finance_hook('fhf_on_invoice_authorized', $fresh);
+            log_line('fiscalhub', 'sigiss note approved by ADN', ['id' => $id, 'nota' => $nota]);
+            if ((int)$em['auto_email'] && $fresh['toma_email'] && $fresh['environment'] === 'production') {
+                try { fh_email_invoice($fresh, $em); } catch (Throwable $e) { log_line('fiscalhub', 'email failed', ['id' => $id, 'error' => $e->getMessage()]); }
+            }
+        }
     }
     return db_find('fh_invoices', $id);
+}
+
+/** Cron: follow the SIGISS notes waiting for the ADN. */
+function fh_sigiss_sync_pending(): array
+{
+    $n = 0;
+    foreach (db_all("SELECT id, customer_id, status, extra FROM fh_invoices WHERE provider = 'sigiss' AND status IN ('processing', 'rejected') AND extra LIKE '%sigiss_adn%' ORDER BY id LIMIT 50") as $r) {
+        if (!fh_sigiss_is_pending(db_find('fh_invoices', (int)$r['id']))) continue;
+        try { fh_sigiss_sync((int)$r['id'], (int)$r['customer_id']); $n++; } catch (Throwable $e) { log_line('fiscalhub', 'sigiss pending sync failed', ['id' => $r['id'], 'error' => $e->getMessage()]); }
+    }
+    return ['checked' => $n];
 }
 
 /**
@@ -1321,6 +1391,7 @@ function fh_void(int $id, int $customerId, string $justification, ?string $by = 
     $inv = fh_invoice($customerId, $id);
     if (in_array($inv['status'], ['authorized', 'canceled'], true)) throw new AppException('Esta nota já foi emitida. Para anulá-la, use "Cancelar".');
     if ($inv['status'] === 'voided') throw new AppException('Este número já foi inutilizado.');
+    if (fh_sigiss_is_pending($inv)) throw new AppException('Esta nota já foi gerada pela Prefeitura e aguarda a aprovação do Ambiente de Dados Nacional (ADN): não pode ser inutilizada.');
     if ($inv['status'] === 'processing' && strtotime((string)$inv['updated_at']) > time() - 90) throw new AppException('Esta nota está sendo transmitida agora. Aguarde alguns segundos e tente de novo.');
     $justification = nfse_text($justification, 255);
     if (mb_strlen($justification) < 15) throw new AppException('A justificativa precisa ter pelo menos 15 caracteres.');
