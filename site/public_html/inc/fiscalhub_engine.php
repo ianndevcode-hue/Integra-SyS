@@ -819,16 +819,15 @@ function fh_sigiss_fields(array $inv, array $em): array
     $retro = !empty($x['retro']) ? strtotime((string)$inv['competence_date']) : null;
     $c = $x['comext'] ?? null;
     $m = fn($v) => sigiss_money($v);
-    // The SIGISS forwards the note to the Ambiente de Dados Nacional, which applies the national DPS rules:
-    // E0625 forbids the rate for ME/EPP taxed by the Simples without ISS withholding (notes 1914/1915 refused).
-    [$regAp, $regEsp] = nfse_regime((string)$em['op_simp_nac'], $em['reg_ap_trib_sn'] ?? '', $em['reg_esp_trib'] ?? '0', (string)($inv['trib_issqn'] ?: '1'));
-    $sendAliq = (float)$inv['iss_rate'] > 0 && $em['op_simp_nac'] !== '1' && nfse_send_aliq((string)$em['op_simp_nac'], $regAp, $regEsp, (string)($inv['trib_issqn'] ?: '1'), $inv['iss_retention'] !== '1');
+    // Marília requires the Simples rate for every optante ("É necessario informar a alíquota do simples nacional")
+    $sendAliq = (float)$inv['iss_rate'] > 0 && $em['op_simp_nac'] !== '1';
     $f = [
         'ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']],
         'crc' => ['xsd:int', only_digits((string)$em['sigiss_crc'])], 'crc_estado' => ['xsd:string', (string)$em['sigiss_crc_uf']],
         'aliquota_simples' => ['xsd:string', $sendAliq ? $m($inv['iss_rate']) : ''],
-        // the manual defines it as the integer code of the note in the contribuinte's system: "FH3" is not accepted
-        'id_sis_legado' => ['xsd:string', (string)(int)$inv['id']],
+        // integer code of the note in the contribuinte's system ("FH3" is not accepted); unique per generated note:
+        // the RPS number, which changes when a note refused by the ADN is re-emitted ("Id_sis_legado já foi utilizado")
+        'id_sis_legado' => ['xsd:string', (string)(int)$inv['dps_number']],
         'servico' => ['xsd:int', (string)$inv['sigiss_code']], 'situacao' => ['xsd:string', $sit],
         'valor' => ['xsd:string', $m($inv['amount'])], 'base' => ['xsd:string', $m($inv['base'])],
         'descricaoNF' => ['xsd:string', nfse_text((string)$inv['description'], 1500)],
@@ -961,6 +960,17 @@ function fh_transmit(int $id, ?int $customerId = null): array
             }
         }
         $recovered = null;
+        // "Id_sis_legado já foi utilizado" (a number used before by another system): the field is optional, resend once without it
+        if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/id_sis_legado/iu', sigiss_errors($xp))) {
+            try {
+                unset($fields['id_sis_legado']);
+                $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
+                log_line('fiscalhub', 'sigiss resend without id_sis_legado', ['id' => $id, 'first' => sigiss_errors($xp), 'resultado' => sigiss_value($xp2, 'Resultado'), 'errors' => sigiss_errors($xp2)]);
+                if ((sigiss_value($xp2, 'Resultado') === '1' && (int)sigiss_value($xp2, 'Nota') > 0) || sigiss_errors($xp2) || sigiss_value($xp2, 'Resultado') === '') [$xp, $number] = [$xp2, sigiss_value($xp2, 'Nota')];
+            } catch (NfseException $e) {
+                log_line('fiscalhub', 'sigiss resend without id_sis_legado failed', ['id' => $id, 'error' => $e->getMessage()]);
+            }
+        }
         // the SIGISS may still demand the Simples rate: a validation refusal creates no note, so resend once with it
         if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && ($fields['aliquota_simples'][1] ?? '') === '' && (float)$inv['iss_rate'] > 0 && $em['op_simp_nac'] !== '1'
             && preg_grep('/al[ií]quota/iu', sigiss_errors($xp))) {
@@ -969,6 +979,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
                 $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
                 log_line('fiscalhub', 'sigiss resend with aliquota_simples', ['id' => $id, 'first' => sigiss_errors($xp), 'resultado' => sigiss_value($xp2, 'Resultado'), 'errors' => sigiss_errors($xp2)]);
                 if (sigiss_value($xp2, 'Resultado') === '1' && (int)sigiss_value($xp2, 'Nota') > 0) [$xp, $number] = [$xp2, sigiss_value($xp2, 'Nota')];
+                elseif (sigiss_errors($xp2)) $xp = $xp2; // show what the SIGISS said about the corrected note
             } catch (NfseException $e) {
                 log_line('fiscalhub', 'sigiss aliquota resend failed', ['id' => $id, 'error' => $e->getMessage()]);
             }
