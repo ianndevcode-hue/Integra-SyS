@@ -162,7 +162,18 @@ async function detail(el, id) {
     intro: '<div class="alert alert-warning" style="margin:0">O cancelamento é enviado para a ' + (n.provider === 'sigiss' ? 'Prefeitura (SIGISS)' : 'Receita (Emissor Nacional)') + ' e não pode ser desfeito. Verifique o prazo de cancelamento do seu município.</div>',
     fields: [{ name: 'reason', label: 'Motivo', type: 'select', empty: false, span: 2, options: [{ value: '1', label: 'Erro na emissão' }, { value: '2', label: 'Serviço não prestado' }, { value: '9', label: 'Outros' }] },
       { name: 'justification', label: 'Justificativa (mín. 15 caracteres)', type: 'textarea', rows: 3, required: true, span: 2 }],
-    onSubmit: async (d) => { await api(`/fh/invoices/${n.id}/cancel`, { method: 'POST', body: d }); toast('Nota cancelada.'); window.dispatchEvent(new Event('fh:reload')); },
+    onSubmit: async (d) => {
+      try {
+        await api(`/fh/invoices/${n.id}/cancel`, { method: 'POST', body: d });
+      } catch (err) {
+        if (!err.details?.length) throw err;
+        // show what the prefeitura/Receita answered, not just the title
+        const m = modal({ title: 'Cancelamento não realizado', body: `<div class="alert alert-danger" style="margin:0"><b>${esc(err.message)}</b><ul style="margin:8px 0 0">${err.details.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`, footer: '<button class="btn btn-primary" data-close>Entendi</button>' });
+        $('[data-close]', m.foot)?.addEventListener('click', m.close);
+        return;
+      }
+      toast('Nota cancelada.'); window.dispatchEvent(new Event('fh:reload'));
+    },
   }));
   $('[data-subst]', el)?.addEventListener('click', () => formModal({
     title: 'Substituir NFS-e', size: 'sm', submitLabel: 'Criar nota substituta', values: { motivo: '99' },

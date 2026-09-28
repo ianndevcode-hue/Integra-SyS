@@ -1079,7 +1079,23 @@ function fh_cancel(int $id, int $customerId, int $reason, string $justification)
             'ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']],
             'nota' => ['xsd:int', (string)$inv['nfse_number']], 'cMotivo' => ['xsd:int', (string)$reason], 'xMotivo' => ['xsd:string', $justification], 'email' => ['xsd:string', (string)($inv['toma_email'] ?? '')],
         ]]], $cfg['url']);
-        if (sigiss_value($xp, 'Resultado') !== '1') throw new NfseException('A Prefeitura (SIGISS) recusou o cancelamento.', sigiss_errors($xp) ?: ['Motivo não informado.']);
+        if (sigiss_value($xp, 'Resultado') !== '1') {
+            $errors = sigiss_errors($xp);
+            log_line('fiscalhub', 'sigiss CancelarNota refused', ['id' => $id, 'nota' => $inv['nfse_number'], 'cMotivo' => $reason, 'resultado' => sigiss_value($xp, 'Resultado'), 'errors' => $errors, 'response' => sigiss_last_response()]);
+            // the prefeitura may have canceled it even so (empty answer): check the note itself
+            $status = '';
+            try {
+                $q = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
+                    'Nota' => ['type' => 'xsd:int', 'value' => (int)$inv['nfse_number']]], $cfg['url']);
+                $status = trim(sigiss_value($q, 'StatusNFe') . ' ' . sigiss_value($q, 'situacao'));
+                log_line('fiscalhub', 'sigiss note status after cancel refusal', ['id' => $id, 'status' => $status, 'response' => sigiss_last_response()]);
+            } catch (Throwable $e) { /* optional */ }
+            if (!preg_match('/cancel/i', $status)) {
+                throw new NfseException('A Prefeitura (SIGISS) recusou o cancelamento.', array_merge($errors ?: ['O SIGISS não informou o motivo.'],
+                    $status !== '' ? ['Situação da nota nº ' . $inv['nfse_number'] . ' na Prefeitura: ' . $status . '.'] : [],
+                    $errors ? sigiss_hints($errors) : ['Se o prazo de cancelamento pelo sistema já passou, peça o cancelamento no portal marilia.sigiss.com.br.']));
+            }
+        }
         db_update('fh_invoices', $id, ['status' => 'canceled', 'cancel_reason' => $justification, 'canceled_at' => now(), 'updated_at' => now()]);
         fh_finance_hook('fhf_on_invoice_canceled', db_find('fh_invoices', $id));
         return db_find('fh_invoices', $id);
