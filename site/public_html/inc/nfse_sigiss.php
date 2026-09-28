@@ -253,7 +253,9 @@ function sigiss_transmit(int $id): array
     $issValue = round($issBase * (float)$inv['iss_rate'] / 100, 2);
     $date = strtotime($inv['created_at']);
     $fields = sigiss_prestador_fields($cfg) + [
-        'aliquota_simples' => ['xsd:string', $conf['op_simp_nac'] !== '1' && (float)$inv['iss_rate'] > 0 ? sigiss_money($inv['iss_rate']) : ''],
+        // national rule E0625 (the SIGISS forwards the note to the ADN): ME/EPP by the Simples only with ISS withheld
+        'aliquota_simples' => ['xsd:string', $conf['op_simp_nac'] !== '1' && (float)$inv['iss_rate'] > 0
+            && nfse_send_aliq((string)$conf['op_simp_nac'], ...array_merge(nfse_regime((string)$conf['op_simp_nac'], $conf['reg_ap_trib_sn'] ?? '', $conf['reg_esp_trib'] ?? '0', '1'), ['1', (bool)$inv['iss_withheld']])) ? sigiss_money($inv['iss_rate']) : ''],
         'id_sis_legado' => ['xsd:string', (string)$inv['id']],
         'servico' => ['xsd:int', $cfg['servico']],
         'situacao' => ['xsd:string', $situacao],
