@@ -923,6 +923,24 @@ function fh_transmit(int $id, ?int $customerId = null): array
             $fail($e->getMessage(), $e->details);
         }
         $number = sigiss_value($xp, 'Nota');
+        // "Código do Serviço não encontrado / não cadastrado": try once the other writing of the same
+        // LC 116 item (106 <-> 0106). A refusal never creates a note, so the second call is safe.
+        $code = only_digits((string)$inv['sigiss_code']);
+        $alt = strlen($code) === 3 ? '0' . $code : (strlen($code) === 4 && $code[0] === '0' ? substr($code, 1) : null);
+        if ($alt && !(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0) && preg_grep('/c[oó]digo do servi[cç]o/iu', sigiss_errors($xp))) {
+            try {
+                $fields['servico'] = ['xsd:int', $alt];
+                $xp2 = sigiss_call('GerarNota', ['DescricaoRps' => ['type' => 'tns:tcDescricaoRps', 'fields' => $fields]], fh_sigiss_cfg($em)['url']);
+                if (sigiss_value($xp2, 'Resultado') === '1' && (int)sigiss_value($xp2, 'Nota') > 0) {
+                    [$xp, $number] = [$xp2, sigiss_value($xp2, 'Nota')];
+                    db_update('fh_invoices', $id, ['sigiss_code' => $alt]);
+                    if ($inv['service_id']) db_exec('UPDATE fh_services SET sigiss_code = ? WHERE id = ? AND emitter_id = ?', [$alt, $inv['service_id'], $em['id']]);
+                    log_line('fiscalhub', 'sigiss service code format fixed', ['id' => $id, 'from' => $code, 'to' => $alt]);
+                }
+            } catch (NfseException $e) {
+                log_line('fiscalhub', 'sigiss alt service code failed', ['id' => $id, 'error' => $e->getMessage()]);
+            }
+        }
         if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)) {
             $errors = sigiss_errors($xp);
             log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'response' => sigiss_last_response()]);

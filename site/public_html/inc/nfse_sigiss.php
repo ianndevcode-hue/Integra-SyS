@@ -181,7 +181,8 @@ function sigiss_hints(array $errors): array
     $out = [];
     if (preg_match('/senha/u', $t) && !str_contains($t, 'não pode mais ser lida')) $out[] = 'Como resolver: a senha do SIGISS enviada não confere. Use a mesma senha com que a empresa entra no portal marilia.sigiss.com.br (com o CCM). Corrija em "Empresa e certificado" → Senha do SIGISS e clique em "Testar conexão" antes de emitir de novo.';
     if (preg_match('/\bccm\b|inscri[cç][aã]o municipal/u', $t)) $out[] = 'Como resolver: confira a inscrição municipal (CCM) da empresa em "Empresa e certificado" — use só os números, como aparece no portal SIGISS.';
-    if (preg_match('/servi[cç]o|atividade/u', $t)) $out[] = 'Como resolver: confira o "Código do serviço no SIGISS" (ex.: 106) no cadastro do serviço — ele precisa estar liberado para o CCM da empresa.';
+    if (preg_match('/n[aã]o cadastrad[oa] para (esse|este) contribuinte/u', $t)) $out[] = 'Como resolver: este código de serviço não está vinculado ao CCM da empresa no cadastro da Prefeitura. Entre no portal marilia.sigiss.com.br com o CCM e a senha, abra a emissão de nota e veja na lista de serviços/atividades o código das atividades cadastradas para a empresa; use esse código (só os números) em Serviços → "Código do serviço no SIGISS". Se a atividade que você presta não aparece, peça ao contador ou à Prefeitura para incluí-la no cadastro mobiliário.';
+    elseif (preg_match('/servi[cç]o|atividade/u', $t)) $out[] = 'Como resolver: confira o "Código do serviço no SIGISS" (ex.: 106) no cadastro do serviço — ele precisa estar liberado para o CCM da empresa.';
     if (preg_match('/\bnbs\b/u', $t)) $out[] = 'Como resolver: escolha um código NBS da lista sugerida para o item de serviço.';
     return $out;
 }
