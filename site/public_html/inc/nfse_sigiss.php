@@ -46,6 +46,20 @@ function sigiss_fix_text(string $s): string
 }
 
 /**
+ * Plain-ASCII text for the SIGISS. Its NuSOAP server re-decodes the payload and then rejects any
+ * accented character as "não está no formato UTF-8", whatever encoding is sent, so names,
+ * addresses and the description go without accents (Marília → Marilia, "–" → "-").
+ */
+function sigiss_ascii(string $s): string
+{
+    $s = strip_accents(mb_convert_encoding($s, 'UTF-8', 'UTF-8'));
+    $s = strtr($s, ['–' => '-', '—' => '-', '‒' => '-', '“' => '"', '”' => '"', '„' => '"', '‘' => "'", '’' => "'", '‚' => "'",
+        '…' => '...', 'º' => 'o', 'ª' => 'a', '°' => 'o', '§' => 'S', '€' => 'EUR', '£' => 'GBP', '•' => '-', '·' => '-', '×' => 'x',
+        "\u{00A0}" => ' ', 'Æ' => 'AE', 'æ' => 'ae', 'Œ' => 'OE', 'œ' => 'oe', 'ß' => 'ss', 'Ø' => 'O', 'ø' => 'o']);
+    return preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/', '', $s);
+}
+
+/**
  * Call a SIGISS operation. $params: ['ParamName' => ['type' => 'tns:...', 'fields' => [name => [xsdType, value]]]]
  * or ['ParamName' => ['type' => 'xsd:int', 'value' => 1]].
  * @return DOMXPath over the response
@@ -58,6 +72,7 @@ function sigiss_call(string $operation, array $params, ?string $url = null): DOM
             $inner = '';
             foreach ($p['fields'] as $field => [$type, $value]) {
                 if ($value === null || $value === '') continue;
+                if ($field !== 'senha') $value = sigiss_ascii((string)$value);
                 $inner .= "<$field xsi:type=\"$type\">" . htmlspecialchars((string)$value, ENT_XML1 | ENT_QUOTES, 'UTF-8') . "</$field>";
             }
             $body .= "<$name xsi:type=\"{$p['type']}\">$inner</$name>";
