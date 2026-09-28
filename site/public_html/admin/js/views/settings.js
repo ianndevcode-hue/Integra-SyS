@@ -60,6 +60,9 @@ async function renderGeneral(el) {
           <div class="field"><label>Série do RPS/DPS</label><input name="nfse_serie" value="${esc(s.nfse_serie || '1')}"></div>
           <div class="field"><label>Próximo número do RPS/DPS</label><input name="nfse_next_number" type="number" min="1" value="${esc(s.nfse_next_number || '1')}"></div>
           <div class="field span-2"><label>Descrição padrão do serviço</label><input name="nfse_default_description" value="${esc(s.nfse_default_description || '')}"></div>
+          <div class="field span-2"><label>Endereço da empresa (impresso no DANFSe)</label><input name="company_address" value="${esc(s.company_address || '')}" placeholder="Rua, número, bairro"></div>
+          <div class="field"><label>CEP</label><input name="company_cep" value="${esc(s.company_cep || '')}" inputmode="numeric"></div>
+          <div class="field"><label>Cidade / UF</label><div style="display:flex;gap:6px"><input name="company_city" value="${esc(s.company_city || 'Marília')}"><input name="company_state" value="${esc(s.company_state || 'SP')}" maxlength="2" style="width:56px"></div></div>
 
           <fieldset style="grid-column:1/-1"><legend>Tributos federais, retenções e Lei da Transparência</legend>
             <p class="help small" style="margin:0 0 10px">Deixe em branco para o padrão automático do regime: <b>Simples/MEI</b> = 0% (recolhidos no DAS); <b>não optante (lucro presumido)</b> = PIS 0,65% · COFINS 3% · CSLL 1% · IRRF 1,5%. Os valores podem ser ajustados em cada nota.</p>

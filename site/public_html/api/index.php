@@ -1361,7 +1361,7 @@ route('DELETE', '/distributions/{id}', function ($p) {
 
 /* ============================================================== SETTINGS */
 
-const EDITABLE_SETTINGS = ['nfse_provider', 'nfse_sigiss_password', 'nfse_sigiss_servico', 'nfse_sigiss_situacao', 'nfse_sigiss_url', 'company_name', 'company_cnpj', 'company_email', 'company_phone', 'asaas_environment', 'asaas_api_key', 'profit_reserve_percent', 'ticket_sla_hours', 'appointment_slot_minutes', 'project_stage_template',
+const EDITABLE_SETTINGS = ['company_address', 'company_cep', 'company_city', 'company_state', 'nfse_provider', 'nfse_sigiss_password', 'nfse_sigiss_servico', 'nfse_sigiss_situacao', 'nfse_sigiss_url', 'company_name', 'company_cnpj', 'company_email', 'company_phone', 'asaas_environment', 'asaas_api_key', 'profit_reserve_percent', 'ticket_sla_hours', 'appointment_slot_minutes', 'project_stage_template',
     'ticket_sla_urgent', 'ticket_sla_high', 'ticket_sla_normal', 'ticket_sla_low', 'ticket_autoclose_days', 'ticket_csat_enabled', 'ticket_auto_assign', 'portal_uploads_enabled',
     'goal_revenue_month', 'cost_per_hour', 'default_hourly_rate',
     'fh_sales_enabled', 'fh_grace_days', 'fh_lead_days', 'fh_revenue_category', 'fh_openfinance_enabled', 'fh_pluggy_client_id', 'fh_pluggy_client_secret',
@@ -1621,8 +1621,10 @@ route('GET', '/nfse/{id}/danfse', function ($p) {
         echo $pdf;
         exit;
     }
-    header('Content-Type: text/html; charset=utf-8');
-    require INC_PATH . '/danfse.php';
+    require_once INC_PATH . '/danfse_pdf.php'; // same DANFSe v1.0 layout as the Fiscal Hub
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="DANFSe-' . ($inv['access_key'] ?: 'DPS' . $inv['dps_number']) . '.pdf"');
+    echo danfse_pdf_render(nfse_danfse_data($inv));
     exit;
 });
 

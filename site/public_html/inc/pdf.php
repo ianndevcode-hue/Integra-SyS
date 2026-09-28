@@ -139,6 +139,15 @@ class MiniPdf
         $this->out($cmd . sprintf('%.2F %.2F %.2F %.2F re %s', $x, self::H - $y - $h, $w, $h, $op));
     }
 
+    /** Light diagonal text drawn BEHIND the content of every page (status stamps on fiscal documents). */
+    public function watermarkBehind(string $s, array $rgb = [225, 229, 236], float $size = 64): void
+    {
+        $w = $this->width($s, $size, true);
+        $x = self::W / 2 - $w * 0.707 / 2; $y = self::H / 2 - $w * 0.707 / 2;
+        $cmd = sprintf("q %s rg BT /F2 %.1F Tf 0.707 0.707 -0.707 0.707 %.2F %.2F Tm (%s) Tj ET Q\n", $this->rgb($rgb), $size, $x, $y, $this->enc($s));
+        foreach ($this->pages as $i => $content) $this->pages[$i] = $cmd . $content;
+    }
+
     /** Rotated large text (watermark). */
     public function watermark(string $s, array $rgb = [230, 60, 80]): void
     {

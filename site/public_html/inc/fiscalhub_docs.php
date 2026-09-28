@@ -31,128 +31,81 @@ function fh_file_base(array $inv): string
 
 /* ================================================================== PDF */
 
-function fh_pdf(array $inv, array $em): string
+/** Normalized DANFSe data of a Fiscal Hub invoice. */
+function fh_danfse_data(array $inv, array $em): array
 {
+    require_once INC_PATH . '/danfse_pdf.php';
     $x = json_decode((string)$inv['extra'], true) ?: [];
     $t = json_decode((string)$inv['toma_json'], true) ?: [];
-    $pdf = new MiniPdf('NFS-e ' . ($inv['nfse_number'] ?: $inv['dps_number']));
-    $pdf->addPage();
-    $L = 28.0; $W = MiniPdf::W - 56; $y = 28.0;
-    $blue = [0, 102, 254]; $ink = [15, 23, 42]; $muted = [100, 116, 139]; $line = [214, 222, 235]; $soft = [243, 247, 253];
-    $pdf->rect(0, 0, MiniPdf::W, 6, $blue, null);
-    $pdf->rect(0, 6, MiniPdf::W, 2, [0, 207, 129], null);
-    // header
-    $pdf->font(true, 13)->color(...$ink)->text($L, $y + 16, mb_substr((string)($em['trade_name'] ?: $em['legal_name']), 0, 60));
-    $pdf->font(false, 8.5)->color(...$muted);
-    $pdf->text($L, $y + 30, mb_substr((string)$em['legal_name'], 0, 80) . ' · ' . (strlen($em['document']) === 11 ? 'CPF ' : 'CNPJ ') . fh_doc_fmt($em['document']) . ($em['im'] ? ' · IM ' . $em['im'] : ''));
-    $addr = trim(implode(', ', array_filter([$em['street'], $em['number'], $em['complement'], $em['district']])) . ' — ' . trim(($em['city'] ?? '') . '/' . ($em['uf'] ?? ''), '/') . ($em['cep'] ? ' · CEP ' . $em['cep'] : ''), ' —');
-    if ($addr !== '') $pdf->text($L, $y + 41, mb_substr($addr, 0, 110));
-    $pdf->text($L, $y + 52, trim(($em['email'] ?? '') . ($em['phone'] ? ' · ' . $em['phone'] : '')));
-    $bx = $L + $W - 175;
-    $pdf->rect($bx, $y, 175, 62, $soft, $line);
-    $pdf->font(true, 8)->color(...$blue)->text($bx + 10, $y + 14, 'NOTA FISCAL DE SERVIÇO ELETRÔNICA');
-    $pdf->font(true, 16)->color(...$ink)->text($bx + 10, $y + 34, 'Nº ' . ($inv['nfse_number'] ?: '—'));
-    $pdf->font(false, 8)->color(...$muted);
-    $pdf->text($bx + 10, $y + 46, 'Emissão: ' . ($inv['issued_at'] ? date('d/m/Y H:i', strtotime($inv['issued_at'])) : '—') . ' · Competência: ' . date('m/Y', strtotime($inv['competence_date'])));
-    $pdf->text($bx + 10, $y + 56, 'DPS/RPS ' . $inv['dps_serie'] . '-' . $inv['dps_number'] . ' · ' . ($inv['provider'] === 'sigiss' ? 'SIGISS Marília' : 'Emissor Nacional'));
-    $y += 74;
-    $box = function (string $title, float $h) use ($pdf, &$y, $L, $W, $line, $blue) {
-        $pdf->rect($L, $y, $W, $h, null, $line);
-        $pdf->rect($L, $y, $W, 14, [238, 244, 255], $line);
-        $pdf->font(true, 7.5)->color(...$blue)->text($L + 8, $y + 10, mb_strtoupper($title));
-        $top = $y + 14;
-        $y += $h + 8;
-        return $top;
-    };
-    $field = function (float $x, float $yy, string $label, string $value, float $w = 160) use ($pdf, $muted, $ink) {
-        $pdf->font(false, 6.8)->color(...$muted)->text($x, $yy + 9, mb_strtoupper($label));
-        $pdf->font(true, 8.6)->color(...$ink);
-        $lines = $pdf->wrap($value !== '' ? $value : '—', $w);
-        $pdf->text($x, $yy + 20, $lines[0] . (count($lines) > 1 ? '…' : ''));
-    };
-    // authenticity
-    $top = $box('Autenticidade', 44);
+    $addr = fn(array $a) => trim(implode(', ', array_filter([trim(($a['street'] ?? '') . ', ' . ($a['number'] ?? ''), ', '), $a['complement'] ?? '', $a['district'] ?? ''])));
+    $cityUf = fn(array $a) => trim(($a['city'] ?? '') . (!empty($a['uf']) ? ' - ' . $a['uf'] : ''), ' -');
+    [$regAp, $regEsp] = nfse_regime((string)$em['op_simp_nac'], $em['reg_ap_trib_sn'] ?? '', $em['reg_esp_trib'] ?? '0', (string)$inv['trib_issqn']);
     $key = (string)$inv['access_key'];
-    $field($L + 8, $top, 'Chave de acesso', $key ? trim(chunk_split($key, 4, ' ')) : 'Não se aplica', 330);
-    $field($L + 350, $top, 'Código de verificação', (string)($inv['verification_code'] ?? ''), 180);
-    $pdf->font(false, 6.8)->color(...$muted)->text($L + 8, $top + 28, $inv['provider'] === 'sigiss' ? 'Consulte a autenticidade em marilia.sigiss.com.br' . ($key ? ' ou nfse.gov.br/consultapublica' : '') : 'Consulte a autenticidade em www.nfse.gov.br/consultapublica');
-    // taker
-    $top = $box('Tomador do serviço', 58);
-    $field($L + 8, $top, 'Nome / razão social', (string)$inv['toma_name'], 300);
-    $docLabel = $inv['toma_kind'] === 'ext' ? 'NIF / identificação' : ($inv['toma_kind'] === 'pf' ? 'CPF' : 'CNPJ');
-    $field($L + 320, $top, $docLabel, $inv['toma_kind'] === 'pfni' ? 'Não identificado' : fh_doc_fmt((string)$inv['toma_document']), 110);
-    $field($L + 440, $top, 'Inscrição municipal', (string)($t['im'] ?? ''), 90);
-    $taddr = $inv['toma_kind'] === 'ext' ? trim(($t['street'] ?? '') . ' ' . ($t['number'] ?? '') . ' — ' . ($t['foreign_city'] ?? '') . ' / ' . ($t['country'] ?? ''))
-        : trim(implode(', ', array_filter([$t['street'] ?? '', $t['number'] ?? '', $t['district'] ?? ''])) . ' — ' . ($t['city'] ?? '') . '/' . ($t['uf'] ?? '') . (!empty($t['cep']) ? ' · CEP ' . $t['cep'] : ''));
-    $field($L + 8, $top + 23, 'Endereço', trim($taddr, ' —/'), 300);
-    $field($L + 320, $top + 23, 'E-mail / telefone', trim(($t['email'] ?? '') . (!empty($t['phone']) ? ' · ' . $t['phone'] : '')), 210);
-    if (!empty($x['interm'])) {
-        $top = $box('Intermediário', 32);
-        $field($L + 8, $top, 'Nome', $x['interm']['name'], 300);
-        $field($L + 320, $top, 'CPF/CNPJ/NIF', $x['interm']['document'] ? fh_doc_fmt($x['interm']['document']) : (string)$x['interm']['nif'], 200);
+    $toma = null;
+    if ($inv['toma_kind'] !== 'pfni') {
+        $toma = ['doc' => $inv['toma_kind'] === 'ext' ? ($t['nif'] ?? '') : $inv['toma_document'], 'im' => $t['im'] ?? '', 'phone' => $t['phone'] ?? '', 'name' => $inv['toma_name'], 'email' => $inv['toma_email'] ?? '',
+            'address' => $addr($t), 'city' => $inv['toma_kind'] === 'ext' ? trim(($t['foreign_city'] ?? '') . ' - ' . ($t['country'] ?? ''), ' -') : $cityUf($t), 'cep' => $inv['toma_kind'] === 'ext' ? ($t['foreign_postal'] ?? '') : ($t['cep'] ?? '')];
     }
-    // service
-    $top = $box('Serviço', 58);
-    $lcName = '';
-    foreach (fh_lc116_list() as [$c, $n]) if ($c === $inv['lc116']) { $lcName = $n; break; }
-    $field($L + 8, $top, 'Item da lista (LC 116/2003)', trim(($inv['lc116'] ?? '') . ' ' . $lcName), 330);
-    $field($L + 350, $top, $inv['provider'] === 'sigiss' ? 'Código SIGISS' : 'Código de tributação nacional', (string)($inv['provider'] === 'sigiss' ? $inv['sigiss_code'] : $inv['ctribnac']) . ($inv['ctribmun'] ? ' · mun. ' . $inv['ctribmun'] : ''), 180);
-    $locTxt = ($x['loc']['type'] ?? '') === 'outro' ? 'Outro município (IBGE ' . $x['loc']['city_ibge'] . ')' : (($x['loc']['type'] ?? '') === 'exterior' ? 'Exterior (' . $x['loc']['country'] . ')' : (($em['city'] ?? 'Marília') . '/' . ($em['uf'] ?? 'SP')));
-    $field($L + 8, $top + 23, 'Local da prestação', $locTxt, 200);
-    $field($L + 220, $top + 23, 'Situação do ISS', FH_ISS_SITUATIONS[$inv['sigiss_situacao']][3] ?? '—', 200);
-    $field($L + 440, $top + 23, 'NBS', (string)($inv['cnbs'] ?? ''), 90);
-    // description
-    $pdf->font(false, 8.5);
-    $descLines = $pdf->wrap((string)$inv['description'], $W - 16);
-    $descLines = array_slice($descLines, 0, 22);
-    $top = $box('Discriminação do serviço', 18 + count($descLines) * 11.5);
-    $pdf->font(false, 8.5)->color(...$ink);
-    $yy = $top + 12;
-    foreach ($descLines as $l) { $pdf->text($L + 8, $yy, $l); $yy += 11.5; }
-    // values
-    $top = $box('Valores e tributos', 118);
-    $cells = [
-        ['Valor do serviço', fh_money($inv['amount'])], ['Desconto incondicionado', fh_money($inv['discount_incond'])], ['Desconto condicionado', fh_money($inv['discount_cond'])], ['Deduções / reduções', fh_money($inv['deductions'])],
-        ['Base de cálculo do ISS', fh_money($inv['base'])], ['Alíquota do ISS', number_format((float)$inv['iss_rate'], 2, ',', '.') . '%'], ['Valor do ISS', fh_money($inv['iss_amount'])], ['ISS retido', $inv['iss_retention'] === '1' ? 'Não' : ($inv['iss_retention'] === '2' ? 'Sim, pelo tomador' : 'Sim, pelo intermediário')],
-        ['PIS' . ($inv['pis_withheld'] ? ' (retido)' : ''), fh_money($inv['pis_amount'])], ['COFINS' . ($inv['cofins_withheld'] ? ' (retido)' : ''), fh_money($inv['cofins_amount'])], ['CSLL' . ($inv['csll_withheld'] ? ' (retido)' : ''), fh_money($inv['csll_amount'])], ['IRRF' . ($inv['irrf_withheld'] ? ' (retido)' : ''), fh_money($inv['irrf_amount'])],
-        ['INSS' . ($inv['inss_withheld'] ? ' (retido)' : ''), fh_money($inv['inss_amount'])], ['Total de retenções', fh_money($inv['withheld_total'])], ['Tributos aproximados', fh_money($inv['total_taxes_amount']) . ' (' . number_format((float)$inv['total_taxes_pct'], 2, ',', '.') . '%)'],
-    ];
-    $cw = $W / 4;
-    foreach ($cells as $i => [$lbl, $val]) $field($L + 8 + ($i % 4) * $cw, $top + intdiv($i, 4) * 25, $lbl, $val, $cw - 12);
-    $pdf->rect($L + 3 * $cw + 4, $top + 75, $cw - 8, 26, [230, 250, 241], [0, 207, 129]);
-    $pdf->font(false, 6.8)->color(...$muted)->text($L + 3 * $cw + 12, $top + 85, 'VALOR LÍQUIDO');
-    $pdf->font(true, 11)->color(0, 140, 90)->text($L + 3 * $cw + 12, $top + 98, fh_money($inv['net_amount']));
-    // complementary info
+    $interm = !empty($x['interm']) ? ['doc' => $x['interm']['document'] ?: $x['interm']['nif'], 'im' => $x['interm']['im'] ?? '', 'phone' => $x['interm']['phone'] ?? '', 'name' => $x['interm']['name'], 'email' => $x['interm']['email'] ?? '', 'address' => '', 'city' => '', 'cep' => ''] : null;
+    $emCity = $cityUf(['city' => $em['city'] ?: 'Marília', 'uf' => $em['uf'] ?: 'SP']);
+    $loc = $x['loc'] ?? [];
+    $local = ($loc['type'] ?? '') === 'outro' ? trim(($loc['city'] ?? '') ?: 'IBGE ' . $loc['city_ibge']) : (($loc['type'] ?? '') === 'exterior' ? '-' : $emCity);
+    $ctnName = nfse_tables()['ctribnac'][(string)$inv['ctribnac']] ?? '';
+    if ($ctnName === '') foreach (fh_lc116_list() as [$c, $n]) if ($c === $inv['lc116']) { $ctnName = $n; break; }
+    $pc = (int)!empty($inv['pis_withheld']) . (int)!empty($inv['cofins_withheld']);
+    $retFed = ($inv['irrf_withheld'] ? (float)$inv['irrf_amount'] : 0) + ($inv['inss_withheld'] ? (float)$inv['inss_amount'] : 0) + ($inv['csll_withheld'] ? (float)$inv['csll_amount'] : 0);
+    $retPc = ($inv['pis_withheld'] ? (float)$inv['pis_amount'] : 0) + ($inv['cofins_withheld'] ? (float)$inv['cofins_amount'] : 0);
+    $fedSum = (float)$inv['pis_amount'] + (float)$inv['cofins_amount'] + (float)$inv['csll_amount'] + (float)$inv['irrf_amount'] + ($inv['inss_withheld'] ? (float)$inv['inss_amount'] : 0);
+    $iss = (float)$inv['iss_amount'];
+    $totalAprox = (float)$inv['total_taxes_amount'];
+    $aproxMun = $totalAprox > 0 ? min($iss, $totalAprox) : $iss;
+    $aproxFed = $totalAprox > 0 ? max(0, $totalAprox - $aproxMun) : $fedSum;
+    $nbs = (string)($inv['cnbs'] ?? '');
     $info = [];
-    $regime = ['1' => 'Não optante do Simples Nacional', '2' => 'MEI — Microempreendedor Individual', '3' => 'Optante do Simples Nacional (ME/EPP)'][$em['op_simp_nac']] ?? '';
-    $info[] = 'Regime: ' . $regime . ((string)$em['reg_esp_trib'] !== '0' ? ' · Regime especial: ' . (FH_REG_ESP[$em['reg_esp_trib']] ?? '') : '');
-    if (!empty($x['obra'])) $info[] = 'Obra: ' . trim(($x['obra']['codigo'] ?? '') . ' ' . ($x['obra']['cib'] ?? '') . ' ' . ($x['obra']['street'] ?? '') . ' ' . ($x['obra']['number'] ?? '') . ' ' . ($x['obra']['cep'] ?? ''));
+    if ($nbs !== '') $info[] = 'NBS: ' . $nbs . (($n = nfse_tables()['nbs'][$nbs] ?? '') ? ' - ' . $n : '');
+    if ($inv['lc116']) $info[] = 'Item da lista de serviços (LC 116/2003): ' . $inv['lc116'];
+    if ($inv['provider'] === 'sigiss') $info[] = 'NFS-e emitida pelo SIGISS da Prefeitura de Marília' . ($inv['verification_code'] ? ' · código de verificação ' . $inv['verification_code'] : '') . ($inv['print_url'] ? ' · via oficial: ' . $inv['print_url'] : '');
+    if (!empty($x['obra'])) $info[] = 'Obra: ' . trim(implode(' ', array_filter([$x['obra']['codigo'] ?? '', $x['obra']['cib'] ?? '', $x['obra']['street'] ?? '', $x['obra']['number'] ?? '', $x['obra']['cep'] ?? ''])));
     if (!empty($x['evento'])) $info[] = 'Evento: ' . $x['evento']['nome'] . ' (' . date('d/m/Y', strtotime($x['evento']['inicio'])) . ' a ' . date('d/m/Y', strtotime($x['evento']['fim'])) . ')';
-    if (!empty($x['comext'])) $info[] = 'Exportação de serviço · moeda ' . $x['comext']['moeda'] . ' · valor ' . number_format((float)$x['comext']['valor_moeda'], 2, ',', '.');
-    if (!empty($x['exig'])) $info[] = 'Exigibilidade suspensa (' . ($x['exig']['tipo'] === '1' ? 'decisão judicial' : 'processo administrativo') . ') nº ' . ltrim($x['exig']['processo'], '0');
-    if (!empty($x['bm'])) $info[] = 'Benefício municipal nº ' . $x['bm']['numero'];
-    if (!empty($x['subst'])) $info[] = 'Substitui a NFS-e de chave ' . $x['subst']['chave'];
-    if (!empty($x['info']['complementar'])) $info[] = $x['info']['complementar'];
+    if (!empty($x['comext'])) $info[] = 'Exportação de serviço · moeda ' . $x['comext']['moeda'] . ' · valor na moeda ' . number_format((float)$x['comext']['valor_moeda'], 2, ',', '.');
+    if (!empty($x['subst'])) $info[] = 'Substitui a NFS-e de chave de acesso ' . $x['subst']['chave'];
     if (!empty($x['info']['pedido'])) $info[] = 'Pedido: ' . $x['info']['pedido'];
-    $pdf->font(false, 7.8);
-    $infoLines = [];
-    foreach ($info as $i) foreach ($pdf->wrap($i, $W - 16) as $l) $infoLines[] = $l;
-    $infoLines = array_slice($infoLines, 0, 10);
-    $top = $box('Informações complementares', 14 + count($infoLines) * 10.5);
-    $pdf->color(...$ink);
-    $yy = $top + 11;
-    foreach ($infoLines as $l) { $pdf->text($L + 8, $yy, $l); $yy += 10.5; }
-    // footer
-    if ($inv['environment'] !== 'production') {
-        $pdf->font(true, 9)->color(200, 60, 60)->text($L, $y + 6, 'EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO (PRODUÇÃO RESTRITA) — SEM VALOR FISCAL');
-    }
-    if ($inv['provider'] === 'sigiss' && $inv['print_url']) $pdf->font(false, 7)->color(...$muted)->text($L, MiniPdf::H - 40, 'Documento oficial da Prefeitura: ' . mb_substr((string)$inv['print_url'], 0, 120));
-    $pdf->line($L, MiniPdf::H - 32, $L + $W, MiniPdf::H - 32, 0.5, $line);
-    $pdf->font(false, 7)->color(...$muted)->text($L, MiniPdf::H - 20, 'Documento auxiliar gerado pelo Integra Fiscal Hub · integra-code.tech' . ($inv['provider'] === 'nacional' ? ' · O documento fiscal válido é o XML da NFS-e.' : ''));
-    $pdf->text($L, MiniPdf::H - 20, 'Página 1', $W, 'R');
-    if ($inv['status'] === 'canceled') $pdf->watermark('CANCELADA');
-    elseif ($inv['status'] !== 'authorized') $pdf->watermark(mb_strtoupper(FH_STATUS[$inv['status']] ?? 'RASCUNHO'), [150, 160, 180]);
-    return $pdf->output();
+    if (!empty($x['info']['doc_ref'])) $info[] = 'Documento de referência: ' . $x['info']['doc_ref'];
+    if (!empty($x['info']['complementar'])) $info[] = $x['info']['complementar'];
+    $homolog = $inv['environment'] !== 'production';
+    if ($homolog) $info[] = 'NFS-e EMITIDA EM AMBIENTE DE PRODUÇÃO RESTRITA (HOMOLOGAÇÃO) - SEM VALOR FISCAL';
+    $wm = $inv['status'] === 'canceled' ? 'CANCELADA' : ($inv['status'] !== 'authorized' ? mb_strtoupper(FH_STATUS[$inv['status']] ?? 'RASCUNHO') : ($homolog ? 'SEM VALOR FISCAL' : null));
+    return [
+        'key' => $key, 'number' => (string)($inv['nfse_number'] ?? ''), 'competence' => danfse_dt($inv['competence_date'], false),
+        'dh_nfse' => danfse_xml_dt($inv['xml_nfse'] ?? null, 'dhProc') ?? danfse_dt($inv['issued_at']), 'dps_number' => (string)$inv['dps_number'], 'dps_serie' => (string)$inv['dps_serie'],
+        'dh_dps' => danfse_xml_dt($inv['xml_dps'] ?? null, 'dhEmi') ?? danfse_dt($inv['issued_at'] ?: $inv['created_at']),
+        'qr' => $key !== '' ? DANFSE_CONSULTA . $key : ((string)($inv['print_url'] ?? '') ?: null),
+        'emit' => ['doc' => $em['document'], 'im' => $em['im'] ?? '', 'phone' => $em['phone'] ?? '', 'name' => $em['legal_name'], 'email' => $em['email'] ?? '',
+            'address' => $addr($em), 'city' => $emCity, 'cep' => $em['cep'] ?? '', 'simples' => DANFSE_SIMPLES[$em['op_simp_nac']] ?? '-', 'reg_ap' => $regAp !== '' ? DANFSE_REG_AP[$regAp] : '-'],
+        'toma' => $toma, 'interm' => $interm,
+        'serv' => ['ctn' => danfse_ctn($inv['ctribnac']) . ($ctnName ? ' - ' . $ctnName : ''), 'ctm' => $inv['provider'] === 'sigiss' ? ($inv['sigiss_code'] ? $inv['sigiss_code'] . ' (SIGISS)' : '') : (string)($inv['ctribmun'] ?? ''),
+            'local' => $local, 'pais' => ($loc['type'] ?? '') === 'exterior' ? $loc['country'] : '', 'desc' => (string)$inv['description']],
+        'mun' => ['trib' => DANFSE_TRIB[(string)$inv['trib_issqn']] ?? 'Operação Tributável', 'pais_result' => $x['pais_resultado'] ?? '', 'incid' => $local !== '-' ? $local : $emCity,
+            'reg_esp' => DANFSE_REG_ESP[$regEsp] ?? 'Nenhum', 'imun' => (string)$inv['trib_issqn'] === '2' ? (FH_IMUNIDADES[$x['imunidade'] ?? ''] ?? '') : '',
+            'susp' => !empty($x['exig']) ? 'Sim' : 'Não', 'proc' => !empty($x['exig']) ? ltrim($x['exig']['processo'], '0') : '', 'bm' => $x['bm']['numero'] ?? '',
+            'vserv' => $inv['amount'], 'desc_incond' => $inv['discount_incond'], 'ded' => $inv['deductions'], 'calc_bm' => $x['bm']['valor'] ?? 0,
+            'bc' => $inv['base'], 'aliq' => $inv['iss_rate'], 'ret' => DANFSE_RET[(string)$inv['iss_retention']] ?? 'Não Retido', 'iss' => $iss],
+        'fed' => ['irrf' => $inv['irrf_amount'], 'cp' => $inv['inss_withheld'] ? $inv['inss_amount'] : 0, 'csll' => $inv['csll_amount'], 'pis' => $inv['pis_amount'], 'cofins' => $inv['cofins_amount'],
+            'ret_pc' => ((float)$inv['pis_amount'] > 0 || (float)$inv['cofins_amount'] > 0) ? ['00' => 'PIS/COFINS Não Retidos', '11' => 'PIS/COFINS Retidos', '10' => 'PIS Retido, COFINS Não Retido', '01' => 'COFINS Retido, PIS Não Retido'][$pc] : '',
+            'total' => $fedSum],
+        'tot' => ['vserv' => $inv['amount'], 'desc_cond' => $inv['discount_cond'], 'desc_incond' => $inv['discount_incond'], 'iss_ret' => $inv['iss_retention'] !== '1' ? $iss : 0,
+            'ret_fed' => $retFed, 'ret_pc' => $retPc, 'liquido' => $inv['net_amount']],
+        'aprox' => ['fed' => $aproxFed, 'est' => 0, 'mun' => $aproxMun],
+        'info' => implode("\n", $info),
+        'watermark' => $wm, 'watermark_rgb' => $inv['status'] === 'canceled' ? [248, 205, 210] : [225, 229, 236],
+    ];
+}
+
+/** DANFSe v1.0 (official national layout) of a Fiscal Hub invoice. */
+function fh_pdf(array $inv, array $em): string
+{
+    require_once INC_PATH . '/danfse_pdf.php';
+    return danfse_pdf_render(fh_danfse_data($inv, $em));
 }
 
 /** Official XML (Emissor Nacional) or a structured XML with the note data (SIGISS). */
