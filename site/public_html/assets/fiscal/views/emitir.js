@@ -252,7 +252,6 @@ export async function render(el, ctx) {
     const it = lc.find((i) => i.code === code || i.code.replace(/^0/, '') === code);
     if (it) { F.lc116.value = `${it.code} — ${it.name}`; if (F.ctribnac && !F.ctribnac.value) F.ctribnac.value = it.ctribnac; if (F.sigiss_code && !F.sigiss_code.value) F.sigiss_code.value = it.sigiss; }
   });
-  if (!inv && firstService) applyService();
   if (inv?.lc116) { const it = lc.find((i) => i.code === inv.lc116); if (it) F.lc116.value = `${it.code} — ${it.name}`; }
   syncNbs();
 
@@ -384,5 +383,7 @@ export async function render(el, ctx) {
       footer: '<a class="btn" href="#/notas" data-close>Ver notas</a><button class="btn btn-primary" data-again>Emitir outra</button>' });
     $('[data-again]', m.el).addEventListener('click', () => { m.close(); location.hash = '#/emitir?t=' + Date.now(); });
   };
+  // pre-selected service (?service= or the company default): applied once every helper above exists
+  if (!inv && firstService) { applyService(); syncNbs(); }
   return () => document.removeEventListener('click', outside);
 }
