@@ -948,10 +948,17 @@ function fh_transmit(int $id, ?int $customerId = null): array
                 }
             }
         }
+        $recovered = null;
         if (!(sigiss_value($xp, 'Resultado') === '1' && (int)$number > 0)) {
             $errors = sigiss_errors($xp);
-            log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'response' => sigiss_last_response()]);
-            if (!fh_sigiss_note_is_rps($inv, $em, (int)$number)) {
+            $sent = array_map(fn($f) => $f[1], array_diff_key($fields, ['senha' => 1]));
+            log_line('fiscalhub', 'sigiss GerarNota refused', ['id' => $id, 'resultado' => sigiss_value($xp, 'Resultado'), 'nota' => $number, 'errors' => $errors, 'sent' => array_filter($sent, fn($v) => $v !== '' && $v !== null), 'response' => sigiss_last_response()]);
+            if (sigiss_value($xp, 'Resultado') === '' && !$errors) {
+                // an empty answer may still have created the note: look for this RPS before calling it a refusal
+                try { $recovered = fh_sigiss_find_rps($inv, $em); } catch (Throwable $e) { log_line('fiscalhub', 'sigiss rps lookup failed', ['id' => $id, 'error' => $e->getMessage()]); }
+                if ($recovered) { $number = (string)$recovered['nota']; log_line('fiscalhub', 'sigiss note recovered after empty answer', ['id' => $id, 'nota' => $number]); }
+            }
+            if (!$recovered && !fh_sigiss_note_is_rps($inv, $em, (int)$number)) {
                 // hints only from what the SIGISS itself said (never from our own diagnosis text)
                 $hints = $errors ? sigiss_hints($errors) : [];
                 if (!$errors) {
@@ -965,7 +972,7 @@ function fh_transmit(int $id, ?int $customerId = null): array
                 $fail('A Prefeitura de Marília (SIGISS) recusou a nota.', array_merge($errors, $hints));
             }
         }
-        $upd = ['status' => 'authorized', 'nfse_number' => $number, 'print_url' => sigiss_value($xp, 'LinkImpressao') ?: null, 'verification_code' => sigiss_value($xp, 'autenticidade') ?: null,
+        $upd = ['status' => 'authorized', 'nfse_number' => $number, 'print_url' => sigiss_value($xp, 'LinkImpressao') ?: ($recovered['link'] ?? null) ?: null, 'verification_code' => sigiss_value($xp, 'autenticidade') ?: ($recovered['autenticidade'] ?? null) ?: null,
             'issued_at' => now(), 'error_message' => null, 'updated_at' => now()];
         try {
             $cfg = fh_sigiss_cfg($em);
@@ -1114,41 +1121,58 @@ function fh_sigiss_note_is_rps(array $inv, array $em, int $n): bool
 }
 
 /**
- * Service codes the prefeitura accepted in this company's own notes: finds the last note number with a
- * binary search (ConsultarNotaPrestador, read-only) and reads "servico" from the most recent notes.
- * Cached for 12 hours. @return list of ['code' => '106', 'desc' => '...', 'nota' => 123, 'rate' => '2,00']
+ * The company's most recent SIGISS notes (read-only ConsultarNotaPrestador): an exponential + binary search
+ * finds the last note number, then the last $count notes are read.
+ * @return list of ['nota', 'servico', 'descricao', 'num_rps', 'serie_rps', 'autenticidade', 'chaveacesso', 'link', 'aliquota']
  */
-function fh_sigiss_known_codes(array $em, bool $refresh = false): array
+function fh_sigiss_recent_notes(array $em, int $count = 12): array
 {
-    $key = 'fh_sigiss_codes_' . (int)$em['id'];
-    $cached = json_decode((string)setting($key, ''), true);
-    if (!$refresh && $cached && ($cached['at'] ?? 0) > time() - 43200) return $cached['codes'];
     $cfg = fh_sigiss_cfg($em);
     $get = function (int $n) use ($cfg): ?DOMXPath {
         $xp = sigiss_call('ConsultarNotaPrestador', ['DadosPrestador' => ['type' => 'tns:tcDadosPrestador', 'fields' => ['ccm' => ['xsd:string', $cfg['ccm']], 'cnpj' => ['xsd:string', $cfg['cnpj']], 'senha' => ['xsd:string', $cfg['password']]]],
             'Nota' => ['type' => 'xsd:int', 'value' => $n]], $cfg['url']);
         if ($auth = sigiss_auth_errors(sigiss_errors($xp))) throw new NfseException('O SIGISS recusou o acesso.', $auth);
-        return sigiss_value($xp, 'nota') !== '' || sigiss_value($xp, 'servico') !== '' ? $xp : null;
+        return sigiss_value($xp, 'nota') !== '' || sigiss_value($xp, 'num_rps') !== '' || sigiss_value($xp, 'servico') !== '' ? $xp : null;
     };
     $known = array_map('intval', array_column(db_all("SELECT nfse_number FROM fh_invoices WHERE emitter_id = ? AND provider = 'sigiss' AND nfse_number IS NOT NULL", [$em['id']]), 'nfse_number'));
-    $lo = $known ? max($known) : 0;
-    if (!$lo && $get(1)) $lo = 1;
+    $lo = $known && $get(max($known)) ? max($known) : ($get(1) ? 1 : 0);
+    if (!$lo) return [];
+    $hi = $lo * 2;
+    for ($i = 0; $i < 14 && $get($hi); $i++) { $lo = $hi; $hi *= 2; } // exponential search, then binary
+    while ($hi - $lo > 1) { $mid = intdiv($lo + $hi, 2); if ($get($mid)) $lo = $mid; else $hi = $mid; }
+    $out = [];
+    for ($n = $lo; $n > max(0, $lo - $count); $n--) {
+        if (!($xp = $get($n))) continue;
+        $out[] = ['nota' => $n, 'servico' => only_digits(sigiss_value($xp, 'servico')), 'descricao' => mb_substr(trim(strtok(sigiss_value($xp, 'descricao'), "\n") ?: ''), 0, 90),
+            'num_rps' => only_digits(sigiss_value($xp, 'num_rps')), 'serie_rps' => trim(sigiss_value($xp, 'serie_rps')), 'autenticidade' => sigiss_value($xp, 'autenticidade'),
+            'chaveacesso' => only_digits(sigiss_value($xp, 'chaveacesso')), 'link' => sigiss_value($xp, 'LinkImpressao'), 'aliquota' => sigiss_value($xp, 'aliquota_atividade')];
+    }
+    return $out;
+}
+
+/** Service codes the prefeitura accepted in this company's own notes (cached 12 hours). */
+function fh_sigiss_known_codes(array $em, bool $refresh = false): array
+{
+    $key = 'fh_sigiss_codes_' . (int)$em['id'];
+    $cached = json_decode((string)setting($key, ''), true);
+    if (!$refresh && $cached && ($cached['at'] ?? 0) > time() - 43200) return $cached['codes'];
     $codes = [];
-    if ($lo || $get(1)) {
-        $lo = max(1, $lo);
-        $hi = $lo * 2;
-        for ($i = 0; $i < 14 && $get($hi); $i++) { $lo = $hi; $hi *= 2; } // exponential search, then binary
-        while ($hi - $lo > 1) { $mid = intdiv($lo + $hi, 2); if ($get($mid)) $lo = $mid; else $hi = $mid; }
-        for ($n = $lo; $n > max(0, $lo - 12); $n--) {
-            if (!($xp = $get($n))) continue;
-            $c = only_digits(sigiss_value($xp, 'servico'));
-            if ($c === '' || isset($codes[$c])) continue;
-            $codes[$c] = ['code' => $c, 'desc' => mb_substr(trim(strtok(sigiss_value($xp, 'descricao'), "\n") ?: ''), 0, 90), 'nota' => $n, 'rate' => sigiss_value($xp, 'aliquota_atividade')];
-        }
+    foreach (fh_sigiss_recent_notes($em) as $n) {
+        if ($n['servico'] === '' || isset($codes[$n['servico']])) continue;
+        $codes[$n['servico']] = ['code' => $n['servico'], 'desc' => $n['descricao'], 'nota' => $n['nota'], 'rate' => $n['aliquota']];
     }
     $codes = array_values($codes);
     set_setting($key, json_encode(['at' => time(), 'codes' => $codes], JSON_UNESCAPED_UNICODE));
     return $codes;
+}
+
+/** After an empty SIGISS answer: the note of this RPS, if the prefeitura did create it. */
+function fh_sigiss_find_rps(array $inv, array $em): ?array
+{
+    foreach (fh_sigiss_recent_notes($em, 15) as $n) {
+        if ($n['num_rps'] !== '' && (int)$n['num_rps'] === (int)$inv['dps_number'] && ($n['serie_rps'] === '' || strcasecmp($n['serie_rps'], (string)$inv['dps_serie']) === 0)) return $n;
+    }
+    return null;
 }
 
 /** The SIGISS refused without saying why: test the login and report what we can find out. */
