@@ -11,6 +11,13 @@ require_once INC_PATH . '/pdf.php';
 require_once INC_PATH . '/qrcode.php';
 
 const DANFSE_CONSULTA = 'https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave=';
+const DANFSE_CONSULTA_RESTRITA = 'https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?tpc=1&chave=';
+
+/** Public consultation link of a key: notes of the produção restrita (homologação) exist only in its own portal. */
+function danfse_consulta_url(string $key, ?string $environment): string
+{
+    return (($environment ?? 'production') === 'production' ? DANFSE_CONSULTA : DANFSE_CONSULTA_RESTRITA) . $key;
+}
 /** Official texts used by the DANFSe for the regime / ISS codes. */
 const DANFSE_SIMPLES = ['1' => 'Não Optante', '2' => 'Optante - Microempreendedor Individual (MEI)', '3' => 'Optante - Microempresa ou Empresa de Pequeno Porte (ME/EPP)'];
 const DANFSE_REG_AP = ['1' => 'Regime de apuração dos tributos federais e municipal pelo SN', '2' => 'Regime de apuração dos tributos federais pelo SN e o ISSQN por fora do SN conforme respectiva legislação municipal do tributo', '3' => 'Regime de apuração dos tributos federais e municipal por fora do SN conforme respectivas legislações federal e municipal de cada tributo'];
@@ -281,7 +288,7 @@ function nfse_danfse_data(array $inv): array
         'key' => $key, 'number' => (string)($inv['nfse_number'] ?? ''), 'competence' => danfse_dt($inv['competence_date'] ?? null, false),
         'dh_nfse' => danfse_xml_dt($inv['xml_nfse'] ?? null, 'dhProc') ?? danfse_dt($inv['issued_at'] ?? null), 'dps_number' => (string)$inv['dps_number'], 'dps_serie' => (string)$inv['dps_serie'],
         'dh_dps' => danfse_xml_dt($inv['xml_dps'] ?? null, 'dhEmi') ?? danfse_dt($inv['issued_at'] ?: $inv['created_at']),
-        'qr' => $key !== '' ? DANFSE_CONSULTA . $key : ((string)($inv['print_url'] ?? '') ?: null),
+        'qr' => $key !== '' ? danfse_consulta_url($key, $inv['environment'] ?? null) : ((string)($inv['print_url'] ?? '') ?: null),
         'emit' => ['doc' => $cfg['cnpj'], 'im' => $cfg['im'], 'phone' => (string)setting('company_phone', COMPANY['phone']), 'name' => (string)setting('company_name', COMPANY['name']),
             'email' => (string)setting('company_email', COMPANY['email']), 'address' => (string)setting('company_address', ''), 'city' => $city, 'cep' => (string)setting('company_cep', ''),
             'simples' => DANFSE_SIMPLES[$op] ?? '-', 'reg_ap' => $regAp !== '' ? DANFSE_REG_AP[$regAp] : '-'],

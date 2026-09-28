@@ -81,7 +81,7 @@ function fh_danfse_data(array $inv, array $em): array
         'key' => $key, 'number' => (string)($inv['nfse_number'] ?? ''), 'competence' => danfse_dt($inv['competence_date'], false),
         'dh_nfse' => danfse_xml_dt($inv['xml_nfse'] ?? null, 'dhProc') ?? danfse_dt($inv['issued_at']), 'dps_number' => (string)$inv['dps_number'], 'dps_serie' => (string)$inv['dps_serie'],
         'dh_dps' => danfse_xml_dt($inv['xml_dps'] ?? null, 'dhEmi') ?? danfse_dt($inv['issued_at'] ?: $inv['created_at']),
-        'qr' => $key !== '' ? DANFSE_CONSULTA . $key : ((string)($inv['print_url'] ?? '') ?: null),
+        'qr' => $key !== '' ? danfse_consulta_url($key, $inv['environment']) : ((string)($inv['print_url'] ?? '') ?: null),
         'emit' => ['doc' => $em['document'], 'im' => $em['im'] ?? '', 'phone' => $em['phone'] ?? '', 'name' => $em['legal_name'], 'email' => $em['email'] ?? '',
             'address' => $addr($em), 'city' => $emCity, 'cep' => $em['cep'] ?? '', 'simples' => DANFSE_SIMPLES[$em['op_simp_nac']] ?? '-', 'reg_ap' => $regAp !== '' ? DANFSE_REG_AP[$regAp] : '-'],
         'toma' => $toma, 'interm' => $interm,
